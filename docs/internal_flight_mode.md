@@ -7,7 +7,7 @@ https://docs.px4.io/main/en/concept/flight_tasks
 One of the free flight modes given as (NAVIGATION_STATE_FREE) can be replaced in msg/versioned/VtolVehicleStatus.msg
 
 #### Extend FlightModeManager.cpp
-Include your flight mode in start_flight_task function in src/modules/flight_mode_manager/FlightModeManager.cpp
+Update the start_flight_task function in src/modules/flight_mode_manager/FlightModeManager.cpp to include your custom flight mode.
 Example:
 ```cpp
 	if (_vehicle_status_sub.get().nav_state == vehicle_status_s::NAVIGATION_STATE_SWARM) {
@@ -28,7 +28,7 @@ Example:
 
 #### Extend enums.json
 
-Find navigation_mode_t in src/lib/events/enums.json and add your custom flight mode and build so that the enums are updated. 
+Find navigation_mode_t in src/lib/events/enums.json, add an entry for your custom flight mode, then rebuild the project so the generated enums are updated.
 
 
 #### Extend mode requirements
@@ -45,8 +45,7 @@ setRequirement(vehicle_status_s::NAVIGATION_STATE_SWARM, flags.mode_req_wind_and
 ```
 
 #### Extend coversions - this maps uORB flight modes to internal navigation mode data structures
-Extend the function navigation_mode in src/modules/commander/ModeUtil/conversions.hpp
-navigation_mode_t enums come from enums.json that is mentioned above. In this example, the function is extneded as follows:
+Extend the navigation_mode function in src/modules/commander/ModeUtil/conversions.hpp to support your custom flight mode. The navigation_mode_t enum values are generated from src/lib/events/enums.json, which you updated in the previous step. For example, you can extend the function as follows:
 
 ```cpp
 case vehicle_status_s::NAVIGATION_STATE_SWARM: return navigation_mode_t::swarm;
@@ -56,29 +55,28 @@ case vehicle_status_s::NAVIGATION_STATE_SWARM: return navigation_mode_t::swarm;
 
 Add a case for your flight mode in getVehicleControlMode function in src/modules/commander/ModeUtil/control_mode.cpp 
 
-In this example, this part is done the same as Auto Follow flight mode which just adds a case without doing anything else:
+In this example, this is implemented the same way as the Orbit flight mode.
 
 ```cpp
-case vehicle_status_s::NAVIGATION_STATE_AUTO_FOLLOW_TARGET:
 case vehicle_status_s::NAVIGATION_STATE_SWARM:
-
-// Follow Target supports RC adjustment, so disable auto control mode to disable
-// the Flight Task from exiting itself when RC stick movement is detected.
-case vehicle_status_s::NAVIGATION_STATE_ORBIT:
 	vehicle_control_mode.flag_control_manual_enabled = false;
 	getControlMode(SetpointType::Trajectory, vehicle_control_mode);
-	break;
+break;
 ```
 
 This could be a mistake in the code since, in this way, when auto follow is activated, the code jumps to the code block specified by the orbit flight mode.
 
 
 
-## Mavlink interface for flight modes (this maps MAVLink flight mode to uOrb flight mode)
-Update flight mode enums in src/modules/commander/px4_custom_mode.h
-In this example, swarm flight mode included in PX4_CUSTOM_SUB_MODE_AUTO enum 
+## Mavlink interface for flight modes (this maps MAVLink flight modes to uORB flight modes)
 
-update get_px4_custom_mode. For example:
+Update flight mode enums in src/modules/commander/px4_custom_mode.h
+
+There 
+
+In this example, swarm flight mode is included under PX4_CUSTOM_SUB_MODE_AUTO enum 
+
+Extend the get_px4_custom_mode function in px4_custom_mode.h to handle your custom flight mode. For example:
 ```cpp
 	case vehicle_status_s::NAVIGATION_STATE_SWARM:
 		custom_mode.main_mode = PX4_CUSTOM_MAIN_MODE_AUTO;
@@ -86,7 +84,7 @@ update get_px4_custom_mode. For example:
 		break;
 ```
 
-Extend the switch statement in handle_command in src/modules/commander/commander.cpp 
+Extend the switch statement in handle_command function in src/modules/commander/commander.cpp 
 If you implemented your flight mode as Auto, then search for:
 
 ```cpp
@@ -97,9 +95,11 @@ case PX4_CUSTOM_SUB_MODE_AUTO_FOLLOW_TARGET:
 							
 and include your flight mode underneath. 
 
+Test by sending a MAVLink command. See set_on_swarm_mode in tests to see how it works!
 
 
-## Test 
+![MAVLink Flight Mode Diagram](img/mavlink_flight_mode.drawio.svg)
+
 
 
 
