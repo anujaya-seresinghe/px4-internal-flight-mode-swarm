@@ -1,5 +1,7 @@
-## How to use the internal flight mode:
-First clone the PX4 repo with all the submodules and then copy the content of the src folder of the repo to the cloned PX4.
+## How to use the swarm internal flight mode:
+Clone the PX4 repository with all the submodules and then copy the content of src and msg folders of this repository to the cloned PX4.
+
+### Follow the guide in docs to create your own custom internal flight mode 
 
 
 ### Two MAVLINk messages are defined
@@ -45,19 +47,9 @@ float32 z
 float32 yaw
 
 
-## Testing using "swarm_3_nodes"
-
-Open 3 PX4 SITL instances with for example:
-PX4_SYS_AUTOSTART=4001 PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 0
-PX4_GZ_STANDALONE=1 PX4_SYS_AUTOSTART=4001 PX4_GZ_MODEL_POSE="0,1" PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 1
-PX4_GZ_STANDALONE=1 PX4_GZ_MODEL_POSE="0,2" PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 2
-
-and perform a takeoff. 
-
-Start MAVLink Router with the config file configs/mavrouter/main.conf
-mavlink-routerd -c configs/mavrouter/main.conf
-
-
+## Testing using "swarm_virtual_leader_follower"
+Compile send_swarm_simulation.cpp 
+Open a PX4 SITL instance with the ID 1 and perform a take off and then run compiled send_swarm_simulation.
 
 
 
