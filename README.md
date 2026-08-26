@@ -25,24 +25,30 @@ Follow the guide internal_flight_mode in docs to create your own custom internal
     </message>
 
 
-### Three uOrb messages are defined
+### Three uORB messages are defined
 #### Swarm management
 
+```python
 uint64 	timestamp		# time since system start (microseconds)
 uint8 type			# type of the message - initiate/delete etc.
 uint8 swarm_id			# id of the swarm
 uint8 no_of_nodes		# number of nodes in the network
 uint8 leader_id			# id of the swarm leader
+```
 
 #### Swarm node
+
+```python
 uint64 	timestamp		# time since system start (microseconds)
 uint8 swarm_id			# id of the swarm
 uint8 node_id
 float32 x			# relative x position
 float32 y			# relative y position
-
+```
 
 #### Swarm Information
+
+```python
 uint64 	timestamp		# time since system start (microseconds)
 uint8 swarm_id
 uint8 node_id
@@ -50,7 +56,7 @@ float32 x
 float32 y
 float32 z
 float32 yaw
-
+```
 
 ## Testing using "swarm_virtual_leader_follower"
 Compile send_swarm_simulation.cpp 
