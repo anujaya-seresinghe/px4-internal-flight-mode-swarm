@@ -44,7 +44,7 @@ setRequirement(vehicle_status_s::NAVIGATION_STATE_SWARM, flags.mode_req_prevent_
 setRequirement(vehicle_status_s::NAVIGATION_STATE_SWARM, flags.mode_req_wind_and_flight_time_compliance);
 ```
 
-#### Extend coversions - this maps uOrb flight modes to internal navigation_mode data structures
+#### Extend coversions - this maps uORB flight modes to internal navigation mode data structures
 Extend the function navigation_mode in src/modules/commander/ModeUtil/conversions.hpp
 navigation_mode_t enums come from enums.json that is mentioned above. In this example, the function is extneded as follows:
 
