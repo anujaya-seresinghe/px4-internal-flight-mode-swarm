@@ -4,7 +4,8 @@
 Tested with PX4 v1.18.0
 Clone the PX4 repository with all the submodules and then copy the content of src and msg folders of this repository to the cloned PX4.
 
-### Follow the guide in docs to create your own custom internal flight mode 
+
+Follow the guide internal_flight_mode in docs to create your own custom internal flight mode 
 
 
 ### Two MAVLINk messages are defined
