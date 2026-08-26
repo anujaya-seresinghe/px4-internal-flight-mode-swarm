@@ -48,14 +48,16 @@ setRequirement(vehicle_status_s::NAVIGATION_STATE_SWARM, flags.mode_req_wind_and
 Extend the function navigation_mode in src/modules/commander/ModeUtil/conversions.hpp
 navigation_mode_t enums come from enums.json that is mentioned above. In this example, the function is extneded as follows:
 
+```cpp
 case vehicle_status_s::NAVIGATION_STATE_SWARM: return navigation_mode_t::swarm;
-
+```
 
 #### Extend commander - control mode (without this, the vehicle's attitude becomes unstable)
 
 Add a case for your flight mode in getVehicleControlMode function in src/modules/commander/ModeUtil/control_mode.cpp 
 
 In this example, this part is done the same as Auto Follow flight mode which just adds a case without doing anything else:
+
 ```cpp
 case vehicle_status_s::NAVIGATION_STATE_AUTO_FOLLOW_TARGET:
 case vehicle_status_s::NAVIGATION_STATE_SWARM:
@@ -77,19 +79,21 @@ Update flight mode enums in src/modules/commander/px4_custom_mode.h
 In this example, swarm flight mode included in PX4_CUSTOM_SUB_MODE_AUTO enum 
 
 update get_px4_custom_mode. For example:
+```cpp
 	case vehicle_status_s::NAVIGATION_STATE_SWARM:
 		custom_mode.main_mode = PX4_CUSTOM_MAIN_MODE_AUTO;
 		custom_mode.sub_mode = PX4_CUSTOM_SUB_MODE_SWARM;
 		break;
-
+```
 
 Extend the switch statement in handle_command in src/modules/commander/commander.cpp 
 If you implemented your flight mode as Auto, then search for:
 
+```cpp
 case PX4_CUSTOM_SUB_MODE_AUTO_FOLLOW_TARGET:
 	desired_nav_state = vehicle_status_s::NAVIGATION_STATE_AUTO_FOLLOW_TARGET;
 	break;
-
+```
 							
 and include your flight mode underneath. 
 
