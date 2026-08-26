@@ -1,4 +1,7 @@
+## Work in progress 
+
 ## How to use the swarm internal flight mode:
+Tested with PX4 v1.18.0
 Clone the PX4 repository with all the submodules and then copy the content of src and msg folders of this repository to the cloned PX4.
 
 ### Follow the guide in docs to create your own custom internal flight mode 
@@ -23,6 +26,7 @@ Clone the PX4 repository with all the submodules and then copy the content of sr
 
 ### Three uOrb messages are defined
 #### Swarm management
+
 uint64 	timestamp		# time since system start (microseconds)
 uint8 type			# type of the message - initiate/delete etc.
 uint8 swarm_id			# id of the swarm
