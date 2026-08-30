@@ -64,9 +64,6 @@ case vehicle_status_s::NAVIGATION_STATE_SWARM:
 break;
 ```
 
-This could be a mistake in the code since, in this way, when auto follow is activated, the code jumps to the code block specified by the orbit flight mode.
-
-
 
 ## Mavlink interface for flight modes (this maps MAVLink flight modes to uORB flight modes)
 
