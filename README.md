@@ -3,7 +3,7 @@
 > **SITL ONLY — DO NOT USE ON PHYSICAL HARDWARE**
 > 
 > This custom swarm flight mode and module are strictly designed and implemented for software-in-the-loop (**PX4 SITL**) simulation and testing purposes only. It has **not** been validated, safety-tested, or tuned for real-world physical drones. Deploying this module on operational hardware may result in unpredictable flight behavior, crashes, or severe property damage.
-## How to use the swarm internal flight mode:
+## Overview
 Tested with PX4 v1.18.0
 Clone the PX4 repository with all the submodules and then copy the content of src and msg folders of this repository to the cloned PX4.
 
@@ -61,7 +61,38 @@ float32 z
 float32 yaw
 ```
 
-## Testing using "swarm_virtual_leader_follower"
+
+### A MAVLink mode is defined
+MAVLINK_MODE_SWARM is defined to include ATTITUDE and LOCAL_POSITION_NED messages.
+
+
+## Tests 
+## swarm_3_nodes
+Compile activate_swarm_3_nodes.cpp in tests/swarm_3_nodes
+
+Add the following content in ROMFS/px4fmu_common/init.d-posix/px4-rc.mavlink:
+```
+set SWARM_LOCAL_PORT $((15100 + px4_instance))
+set SWARM_REMOTE_PORT $((15200 + px4_instance))
+
+mavlink start -u ${SWARM_LOCAL_PORT} -o ${SWARM_REMOTE_PORT} -m swarm -r 100000 -p
+```
+This opens 2 endpoints for the mavlink mode swarm that is explained above. 
+
+Compile the project and open three SITL instances with:
+```
+PX4_SYS_AUTOSTART=4001 PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 0
+PX4_GZ_STANDALONE=1 PX4_SYS_AUTOSTART=4001 PX4_GZ_MODEL_POSE="0,1" PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 1
+PX4_GZ_STANDALONE=1 PX4_GZ_MODEL_POSE="0,2" PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 2
+```
+and perfrom a takeoff for all three.
+
+Run the python script packet_forwarder.py and execute activate_swarm_3_nodes in tests/swarm_3_nodes. ID 1 is the leader and it therefore exits the swarm flight mode automatically. Move UAV ID 1 and the other two will follow.
+
+
+
+
+## swarm_virtual_leader_follower
 Compile send_swarm_simulation.cpp 
 Open a PX4 SITL instance with the ID 1 and perform a take off and then run compiled send_swarm_simulation.
 
