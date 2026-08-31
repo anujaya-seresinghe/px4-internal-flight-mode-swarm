@@ -106,4 +106,12 @@ Compile send_swarm_simulation.cpp
 Open a PX4 SITL instance with the ID 1 and perform a take off and then run compiled send_swarm_simulation.
 
 
+## Reference
+Wang, J., & Hu, X. (2010). Distributed Consensus in Multi-vehicle Cooperative Control: Theory and Applications (Ren, W. and Beard, R.W.; 2008) [Book Shelf]. *IEEE Control Systems Magazine*, 30(3), 85-86. https://doi.org/10.1109/MCS.2010.936430
+
+Kuriki, Y., & Namerikawa, T. (2014). Consensus-based cooperative formation control with collision avoidance for a multi-UAV system. *2014 American Control Conference*, 2077–2082. https://doi.org/10.1109/ACC.2014.6858777
+
+
+
+
 
