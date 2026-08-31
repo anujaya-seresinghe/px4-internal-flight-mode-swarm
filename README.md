@@ -77,7 +77,7 @@ set SWARM_REMOTE_PORT $((15200 + px4_instance))
 
 mavlink start -u ${SWARM_LOCAL_PORT} -o ${SWARM_REMOTE_PORT} -m swarm -r 100000 -p
 ```
-This opens 2 endpoints for the mavlink mode swarm that is explained above. 
+This opens 2 endpoints for the mavlink mode swarm that is explained above in each SITL instance. 
 
 Compile the project and open three SITL instances with:
 ```
