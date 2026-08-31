@@ -94,17 +94,9 @@ Select the UAVs you want and create a swarm network.
 ## swarm_3_nodes
 Compile activate_swarm_3_nodes.cpp in tests/swarm_3_nodes
 
-Add the following content in ROMFS/px4fmu_common/init.d-posix/px4-rc.mavlink:
-```
-set SWARM_LOCAL_PORT $((15100 + px4_instance))
-set SWARM_REMOTE_PORT $((15200 + px4_instance))
+Make sure misc/px4_mavlink_streams/px4-rc.mavlink is in ROMFS/px4fmu_common/init.d-posix/ 
 
-mavlink start -u ${SWARM_LOCAL_PORT} -o ${SWARM_REMOTE_PORT} -m swarm -r 100000 -p
-```
-This opens 2 endpoints for the mavlink mode swarm that is explained above in each SITL instance. 
-
-
-
+Execute swarm_3_nodes. This creates a swarm network with 3 nodes with ID 1 as the leader. 
 
 ## swarm_virtual_leader_follower
 Compile send_swarm_simulation.cpp 
