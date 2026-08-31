@@ -63,12 +63,16 @@ bool FlightTaskSwarm::update()
 {
 
 	if (_swarm_management_sub.updated()) {
+		PX4_INFO("swarm management received");
 		_swarm_management_sub.update(&_swarm_management);
-		// if (_node_count == 0) {
+		if (_swarm_id != _swarm_management.swarm_id) {
+			reset();
+			PX4_INFO("swarm resetted");
+		}
 
-		// }
 		_no_of_nodes = _swarm_management.no_of_nodes;
 		_leader_id = _swarm_management.leader_id;
+		_swarm_id = _swarm_management.swarm_id;
 		// if the node is the leader, leave swarm flight mode and return to hold
 		if(_leader_id == _own_id) {
 			//return false;
@@ -175,4 +179,17 @@ bool FlightTaskSwarm::update()
 	//PX4_INFO("FlightTaskSwarm update was called!"); // report update
 
 	return true;
+}
+
+
+void FlightTaskSwarm::reset() {
+	_swarm_id = 0;
+	_no_of_nodes = 0;
+	_node_count = 0;
+
+	_consensus_list.clear();
+	_node_list.clear();
+
+
+
 }

@@ -1,0 +1,15 @@
+FROM node:20
+
+WORKDIR /app
+
+# dependencies
+COPY web_app/package*.json ./
+RUN npm install
+
+# only required runtime files
+COPY web_app/public ./public
+COPY web_app/src ./src
+
+EXPOSE 3000
+
+CMD ["npm", "start"]

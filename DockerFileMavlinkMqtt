@@ -1,0 +1,23 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt update && apt install -y \
+    build-essential \
+    libmosquitto-dev \
+    nlohmann-json3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+
+COPY mavlink_mqtt_bridge/mavlink_mqtt_bridge.cpp .
+COPY libraries/mavlink ./mavlink
+
+# Compile the C++ binary using g++
+RUN g++ -std=c++17 mavlink_mqtt_bridge.cpp -o mavlink_mqtt_bridge \
+    -I. \
+    -lmosquitto -lpthread
+
+# Set the default executable command when the container starts
+CMD ["./mavlink_mqtt_bridge"]

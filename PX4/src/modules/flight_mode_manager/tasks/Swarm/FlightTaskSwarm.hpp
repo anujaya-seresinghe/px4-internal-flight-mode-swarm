@@ -105,11 +105,14 @@ private:
 	uint8_t _no_of_nodes;
 	uint8_t _leader_id;
 	uint8_t _node_count = 0;
+	uint8_t _swarm_id = 0;
 	IntrusiveSortedList<Node *> _node_list;
 	IntrusiveSortedList<ConsensusNode *> _consensus_list;
 	swarm_management_s _swarm_management;
 	swarm_node_s _swarm_node;
 	swarm_information_s _swarm_information;
+
+	void reset();
 
 
 
