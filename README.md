@@ -5,6 +5,7 @@
 > This custom swarm flight mode and module are strictly designed and implemented for software-in-the-loop (**PX4 SITL**) simulation and testing purposes only. It has **not** been validated, safety-tested, or tuned for real-world physical drones. Deploying this module on operational hardware may result in unpredictable flight behavior, crashes, or severe property damage.
 ## Overview
 Tested with PX4 v1.18.0
+![Overview](docs/img/overview.gif)
 Clone the PX4 repository with all the submodules and then copy the content of src and msg folders of this repository to the cloned PX4.
 
 
@@ -64,6 +65,10 @@ float32 yaw
 
 ### A MAVLink mode is defined
 MAVLINK_MODE_SWARM is defined to include ATTITUDE and LOCAL_POSITION_NED messages.
+
+## Using the web app
+Start the Docker containers in docker-compose-web-app.yaml and run misc/packet_forwader.py which simulates a mesh network and is currently implemented for 3 nodes.
+Select the UAVs you want and create a swarm network.
 
 
 ## Tests 
