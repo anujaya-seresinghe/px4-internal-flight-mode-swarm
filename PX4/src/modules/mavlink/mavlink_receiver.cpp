@@ -293,6 +293,11 @@ MavlinkReceiver::handle_message(mavlink_message_t *msg)
 		handle_message_local_position_ned(msg);
 		break;
 
+	case MAVLINK_MSG_ID_ATTITUDE:
+		handle_message_attitude(msg);
+	break;
+
+
 
 
 
@@ -3530,7 +3535,7 @@ void MavlinkReceiver::handle_message_swarm_node(mavlink_message_t *msg) {
 
 
 void MavlinkReceiver::handle_message_local_position_ned(mavlink_message_t *msg) {
-	PX4_INFO("local position ned received");
+	//PX4_INFO("local position ned received");
 	mavlink_local_position_ned_t local_position_ned_msg;
 	mavlink_msg_local_position_ned_decode(msg, &local_position_ned_msg);
 	swarm_information_s swarm_information;
@@ -3540,6 +3545,15 @@ void MavlinkReceiver::handle_message_local_position_ned(mavlink_message_t *msg) 
 	swarm_information.z = local_position_ned_msg.z;
 	_swarm_information_pub.publish(swarm_information);
 
+}
+
+void MavlinkReceiver::handle_message_attitude(mavlink_message_t *msg){
+	mavlink_attitude_t attitude_msg;
+	mavlink_msg_attitude_decode(msg, &attitude_msg);
+	swarm_information_s swarm_information;
+	swarm_information.node_id = msg->sysid;
+	swarm_information.yaw = attitude_msg.yaw;
+	_swarm_information_pub.publish(swarm_information);
 }
 
 

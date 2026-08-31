@@ -101,6 +101,7 @@ public:
 private:
 	int32_t _own_id;
 	float _origin_z{0.f};
+	float _ref_yaw;
 	uint8_t _no_of_nodes;
 	uint8_t _leader_id;
 	uint8_t _node_count = 0;

@@ -233,6 +233,7 @@ private:
 	void handle_message_swarm_management(mavlink_message_t *msg);
 	void handle_message_swarm_node(mavlink_message_t *msg);
 	void handle_message_local_position_ned(mavlink_message_t *msg);
+	void handle_message_attitude(mavlink_message_t *msg);
 	void handle_message_tunnel(mavlink_message_t *msg);
 	void handle_message_utm_global_position(mavlink_message_t *msg);
 #if defined(MAVLINK_MSG_ID_SET_VELOCITY_LIMITS) // For now only defined if development.xml is used

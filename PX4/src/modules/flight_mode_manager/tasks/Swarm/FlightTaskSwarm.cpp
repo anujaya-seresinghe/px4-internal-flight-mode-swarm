@@ -69,7 +69,7 @@ bool FlightTaskSwarm::update()
 		// }
 		_no_of_nodes = _swarm_management.no_of_nodes;
 		_leader_id = _swarm_management.leader_id;
-
+		// if the node is the leader, leave swarm flight mode and return to hold
 		if(_leader_id == _own_id) {
 			//return false;
 			vehicle_command_s command{};
@@ -122,7 +122,7 @@ bool FlightTaskSwarm::update()
 						if (node_tmp->node_id != _own_id) {
 							ConsensusNode *consensus_node = new ConsensusNode();
 							consensus_node->offset_x = own_node->x - node_tmp->x;
-							consensus_node->offset_y = own_node->x - node_tmp->y;
+							consensus_node->offset_y = own_node->y - node_tmp->y;
 							consensus_node->weight = 1;
 							consensus_node->node_id = node_tmp->node_id;
 							_consensus_list.add(consensus_node);
@@ -139,8 +139,9 @@ bool FlightTaskSwarm::update()
 	}
 
 	if (_swarm_information_sub.updated()) {
-		PX4_INFO("swarm information received");
+		//PX4_INFO("swarm information received");
 		_swarm_information_sub.update(&_swarm_information);
+		if (!std::isnan(_swarm_information.x)) {
 		for (ConsensusNode *consensus_node : _consensus_list) {
 			if (consensus_node->node_id == _swarm_information.node_id) {
 				consensus_node->x = _swarm_information.x;
@@ -148,6 +149,10 @@ bool FlightTaskSwarm::update()
 				consensus_node->z = _swarm_information.z;
 
 			}
+		}
+		}
+		if (!std::isnan(_swarm_information.x) && _swarm_information.node_id == _leader_id) {
+			_ref_yaw = _swarm_information.yaw;
 		}
 	}
 
@@ -162,6 +167,7 @@ bool FlightTaskSwarm::update()
 		_velocity_setpoint(0) = output_x;
 		_velocity_setpoint(1) = output_y;
 		_velocity_setpoint(2) = 0.0f;
+		_yaw_setpoint = _ref_yaw;
 
 	}
 
