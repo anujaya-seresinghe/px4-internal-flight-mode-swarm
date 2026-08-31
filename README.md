@@ -10,7 +10,8 @@ Tested with PX4 v1.18.0
 ![Overview](docs/img/overview.gif)
 
 
-Clone the PX4 repository with all the submodules and then copy the content of src and msg folders of this repository to the cloned PX4.
+
+
 
 
 Follow the guide internal_flight_mode in docs to create your own custom internal flight mode 
@@ -70,6 +71,20 @@ float32 yaw
 ### A MAVLink mode is defined
 MAVLINK_MODE_SWARM is defined to include ATTITUDE and LOCAL_POSITION_NED messages.
 
+
+## Using swarm flight mode
+Clone the PX4 repository with all the submodules and then copy the content of src and msg folders of this repository to the cloned PX4. Copy misc/px4_mavlink_streams/px4-rc.mavlink to ROMFS/px4fmu_common/init.d-posix/ 
+
+Compile the project and open three SITL instances with:
+```
+PX4_SYS_AUTOSTART=4001 PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 0
+PX4_GZ_STANDALONE=1 PX4_SYS_AUTOSTART=4001 PX4_GZ_MODEL_POSE="0,1" PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 1
+PX4_GZ_STANDALONE=1 PX4_GZ_MODEL_POSE="0,2" PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 2
+```
+and perfrom a takeoff for all three.
+
+Run the python script packet_forwarder.py and execute activate_swarm_3_nodes in tests/swarm_3_nodes. ID 1 is the leader and it therefore exits the swarm flight mode automatically. Move UAV ID 1 and the other two will follow. 
+
 ## Using the web app
 Start the Docker containers in docker-compose-web-app.yaml and run misc/packet_forwader.py which simulates a mesh network and is currently implemented for 3 nodes.
 Select the UAVs you want and create a swarm network.
@@ -87,16 +102,6 @@ set SWARM_REMOTE_PORT $((15200 + px4_instance))
 mavlink start -u ${SWARM_LOCAL_PORT} -o ${SWARM_REMOTE_PORT} -m swarm -r 100000 -p
 ```
 This opens 2 endpoints for the mavlink mode swarm that is explained above in each SITL instance. 
-
-Compile the project and open three SITL instances with:
-```
-PX4_SYS_AUTOSTART=4001 PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 0
-PX4_GZ_STANDALONE=1 PX4_SYS_AUTOSTART=4001 PX4_GZ_MODEL_POSE="0,1" PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 1
-PX4_GZ_STANDALONE=1 PX4_GZ_MODEL_POSE="0,2" PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 2
-```
-and perfrom a takeoff for all three.
-
-Run the python script packet_forwarder.py and execute activate_swarm_3_nodes in tests/swarm_3_nodes. ID 1 is the leader and it therefore exits the swarm flight mode automatically. Move UAV ID 1 and the other two will follow.
 
 
 
