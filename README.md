@@ -74,16 +74,26 @@ MAVLINK_MODE_SWARM is defined to include ATTITUDE and LOCAL_POSITION_NED message
 
 ## Using the swarm flight mode
 
-Run the PX4 Docker container and open three SITL instances inside the container with:
+Run the PX4 Docker container
+```
+docker compose -f docker-compose-px4.yaml up -d
+```
+and open three SITL instances inside the container with:
+
 ```
 PX4_SYS_AUTOSTART=4001 PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 0
 PX4_GZ_STANDALONE=1 PX4_SYS_AUTOSTART=4001 PX4_GZ_MODEL_POSE="0,1" PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 1
 PX4_GZ_STANDALONE=1 PX4_GZ_MODEL_POSE="0,2" PX4_SIM_MODEL=gz_x500 ./build/px4_sitl_default/bin/px4 -i 2
 ```
-and perfrom a takeoff for all three.
+and perfrom a takeoff for all three and execute misc/packet_forwader.py which simulates a mesh network between 3 UAVs.
 
 ### Using the web app
-Start the Docker containers in docker-compose-web-app.yaml and run misc/packet_forwader.py which simulates a mesh network and is currently implemented for 3 nodes.
+Start the Docker containers in docker-compose-web-app.yaml
+```
+docker compose -f docker-compose-web-app.yaml up -d
+```
+
+
 Select the UAVs you want and create a swarm network. When the leader UAV moves, the rest of the swarm network follows.
 
 
