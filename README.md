@@ -9,12 +9,8 @@ Tested with PX4 v1.18.0
 
 ![Overview](docs/img/overview.gif)
 
+A custom flight mode was developed to simulate UAV swarms using a consensus leader-follower control architecture. Collision avoidance is handled via artificial potential fields (APF). A custom GCS allows operators to dynamically form swarm sub-groups and assign designated leaders.
 
-
-
-
-
-Follow the guide internal_flight_mode in docs to create your own custom internal flight mode 
 
 
 ### Two MAVLINk messages are defined
@@ -109,6 +105,9 @@ Execute swarm_3_nodes. This creates a swarm network with 3 nodes with ID 1 as th
 Compile send_swarm_simulation.cpp 
 Open a PX4 SITL instance with the ID 1 and perform a take off and then run compiled send_swarm_simulation.
 
+
+## Misc
+Follow the guide internal_flight_mode in docs to create your own custom internal flight mode 
 
 ## Reference
 Wang, J., & Hu, X. (2010). Distributed Consensus in Multi-vehicle Cooperative Control: Theory and Applications (Ren, W. and Beard, R.W.; 2008) [Book Shelf]. *IEEE Control Systems Magazine*, 30(3), 85-86. https://doi.org/10.1109/MCS.2010.936430
