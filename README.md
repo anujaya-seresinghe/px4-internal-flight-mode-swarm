@@ -72,7 +72,7 @@ float32 yaw
 MAVLINK_MODE_SWARM is defined to include ATTITUDE and LOCAL_POSITION_NED messages.
 
 
-## Using swarm flight mode
+## Using the swarm flight mode
 Clone the PX4 repository with all the submodules and then copy the content of src and msg folders of this repository to the cloned PX4. Copy misc/px4_mavlink_streams/px4-rc.mavlink to ROMFS/px4fmu_common/init.d-posix/ 
 
 Compile the project and open three SITL instances with:
