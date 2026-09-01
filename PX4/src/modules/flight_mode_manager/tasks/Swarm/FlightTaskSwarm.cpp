@@ -151,26 +151,38 @@ bool FlightTaskSwarm::update()
 				consensus_node->x = _swarm_information.x;
 				consensus_node->y = _swarm_information.y;
 				consensus_node->z = _swarm_information.z;
-
+				consensus_node->r_abs = sqrt(((_position(0) - _swarm_information.x) * (_position(0) - _swarm_information.x)) + ((_position(1) - _swarm_information.y) * (_position(1) - _swarm_information.y)));
+				consensus_node->h_abs = fabs(_position(2) - _swarm_information.z);
+				consensus_node->h_sign = sign(_position(2) - _swarm_information.z);
 			}
 		}
 		}
-		if (!std::isnan(_swarm_information.x) && _swarm_information.node_id == _leader_id) {
+		if (!std::isnan(_swarm_information.yaw) && _swarm_information.node_id == _leader_id) {
 			_ref_yaw = _swarm_information.yaw;
+		}
+		if (!std::isnan(_swarm_information.z) && _swarm_information.node_id == _leader_id) {
+			_ref_z = _swarm_information.z;
 		}
 	}
 
 	if (_node_count == _no_of_nodes) {
 		float output_x = 0;
 		float output_y = 0;
+		float apf_sum = 0;
 
 		for (ConsensusNode *consensus_node : _consensus_list) {
 			output_x = output_x - ( consensus_node->weight * (_position(0) - consensus_node->x - consensus_node->offset_x));
 			output_y = output_y - ( consensus_node->weight * (_position(1) - consensus_node->y - consensus_node->offset_y));
+			if(consensus_node->h_abs <= 2 * _DELTA_H && consensus_node->r_abs <= 2 * _DELTA_R){
+				apf_sum = apf_sum + ((1/(consensus_node->h_abs + 1)) - (1/((2 * _DELTA_H) + 1))) * (consensus_node->h_sign/((consensus_node->h_abs + 1) * (consensus_node->h_abs + 1)));
+			}
+
 		}
+		apf_sum = apf_sum * (_Kh/(_no_of_nodes -1));
+
 		_velocity_setpoint(0) = output_x;
 		_velocity_setpoint(1) = output_y;
-		_velocity_setpoint(2) = 0.0f;
+		_velocity_setpoint(2) = ((_ref_z - _position(2)) * _kz) + apf_sum;
 		_yaw_setpoint = _ref_yaw;
 
 	}
@@ -192,4 +204,15 @@ void FlightTaskSwarm::reset() {
 
 
 
+}
+
+
+int8_t FlightTaskSwarm::sign(float x) {
+    if (x < 0) {
+        return -1;
+    }
+    if (x > 0) {
+        return 1;
+    }
+    return 0;
 }

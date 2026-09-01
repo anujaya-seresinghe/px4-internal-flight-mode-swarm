@@ -78,6 +78,9 @@ class ConsensusNode : public IntrusiveSortedListNode<ConsensusNode *>
 		float offset_x;
 		float offset_y;
 		float weight;
+		float r_abs;
+		float h_abs;
+		int8_t h_sign;
 		 bool operator<=(const ConsensusNode &other) const
     {
         return node_id <= other.node_id;
@@ -102,6 +105,12 @@ private:
 	int32_t _own_id;
 	float _origin_z{0.f};
 	float _ref_yaw;
+	float _ref_z;
+	float _kz;
+
+	const float _Kh = 1.0f;
+	const float _DELTA_H = 3.0f;
+	const float _DELTA_R = 3.0f;
 	uint8_t _no_of_nodes;
 	uint8_t _leader_id;
 	uint8_t _node_count = 0;
@@ -113,6 +122,7 @@ private:
 	swarm_information_s _swarm_information;
 
 	void reset();
+	int8_t sign(float x);
 
 
 
