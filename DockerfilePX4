@@ -1,0 +1,40 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    sudo \
+    wget \
+    curl \
+    python3-pip \
+    python3-dev \
+    locales \
+    lsb-release \
+    tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Clone repo, checkout the exact commit hash, and update submodules
+RUN git clone https://github.com/PX4/PX4-Autopilot.git /app/PX4-Autopilot \
+    && cd /app/PX4-Autopilot \
+    && git checkout adc5a53b88 \
+    && git submodule update --init --recursive
+
+WORKDIR /app/PX4-Autopilot
+
+# Run PX4 environment setup
+RUN bash Tools/setup/ubuntu.sh --no-nuttx
+
+# Copy modified PX4 files into the build context
+COPY ./PX4 /app/PX4-Autopilot/
+
+# Pre-compile PX4 SITL and Gazebo target
+RUN make px4_sitl
+
+ENV DISPLAY=:0
+ENV QT_X11_NO_MITSHM=1
+
+CMD ["/bin/bash"]

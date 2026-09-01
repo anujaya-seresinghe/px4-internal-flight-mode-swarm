@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  px4_sitl:
+    build:
+      context: .
+      dockerfile: DockerfilePX4
+    container_name: px4_gazebo_container
+    environment:
+      - DISPLAY=${DISPLAY}
+    volumes:
+      # X11 display socket for Gazebo GUI rendering
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    network_mode: host
+    ipc: host
+    privileged: true
+    tty: true
+    stdin_open: true
