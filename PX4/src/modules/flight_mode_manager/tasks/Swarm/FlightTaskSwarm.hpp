@@ -106,7 +106,7 @@ private:
 	float _origin_z{0.f};
 	float _ref_yaw;
 	float _ref_z;
-	float _kz;
+	float _kz = 1.0f;
 
 	const float _Kh = 1.0f;
 	const float _DELTA_H = 3.0f;
