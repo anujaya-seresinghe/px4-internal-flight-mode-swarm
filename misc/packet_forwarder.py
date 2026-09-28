@@ -2,7 +2,8 @@ import socket
 import select
 import sys
 
-NODES = [0, 1, 2]
+# Number of PX4 instances (0..N-1) to relay between: python3 packet_forwarder.py [N]
+NODES = list(range(int(sys.argv[1]) if len(sys.argv) > 1 else 3))
 BASE_RX = 15200  # Python receives PX4 output
 BASE_TX = 15100  # Python pushes input to PX4
 
@@ -29,7 +30,7 @@ def main():
             print(f"[!] Bind failed on port {rx_port}: {e}")
             sys.exit(1)
 
-    print("\n[==] RAW MESH RELAY ACTIVE [==]\n")
+    print(f"\n[==] RAW MESH RELAY ACTIVE FOR {len(NODES)} NODES [==]\n", flush=True)
 
     while True:
         readable, _, _ = select.select(list(rx_to_node.keys()), [], [], 0.5)

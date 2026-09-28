@@ -61,149 +61,256 @@ bool FlightTaskSwarm::activate(const trajectory_setpoint_s &last_setpoint)
 
 bool FlightTaskSwarm::update()
 {
+	if (_swarm_management_sub.update(&_swarm_management)) {
+		PX4_INFO("swarm management received (type %d)", _swarm_management.type);
 
-	if (_swarm_management_sub.updated()) {
-		PX4_INFO("swarm management received");
-		_swarm_management_sub.update(&_swarm_management);
-		if (_swarm_id != _swarm_management.swarm_id) {
-			reset();
-			PX4_INFO("swarm resetted");
-		}
+		if (_swarm_management.type == swarm_management_s::TYPE_UPDATE_FORMATION
+		    && _swarm_id != 0 && _swarm_management.swarm_id == _swarm_id) {
+			// Keep flying the current formation until the complete new one has arrived
+			_pending_list.clear();
+			_pending_expected = _swarm_management.no_of_nodes;
+			_pending_leader_id = _swarm_management.leader_id;
+			_updating_formation = true;
+			PX4_INFO("swarm %d: formation update started, expecting %d nodes", _swarm_id, _pending_expected);
 
-		_no_of_nodes = _swarm_management.no_of_nodes;
-		_leader_id = _swarm_management.leader_id;
-		_swarm_id = _swarm_management.swarm_id;
-		// if the node is the leader, leave swarm flight mode and return to hold
-		if(_leader_id == _own_id) {
-			//return false;
-			vehicle_command_s command{};
-			command.timestamp = hrt_absolute_time();
-			command.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
-
-			// PX4 Custom Main/Sub mode parameters for Auto Loiter / Hold
-			command.param1 = 1.0f; // Main mode: Auto
-			command.param2 = 4.0f;
-			command.param3 = 3.0f; // Sub mode: Loiter
-
-			command.target_system = _param_mav_sys_id.get();
-			command.target_component = 1;
-			command.from_external = false;
-
-			_vehicle_command_pub.publish(command);
-
-		}
-
-	}
-
-	if (_swarm_node_sub.updated()) {
-		_swarm_node_sub.update(&_swarm_node);
-		uint8_t found = 0;
-
-		for (Node *node : _node_list) {
-			if (node->node_id == _swarm_node.node_id) {
-				found = 1;
-			}
-		}
-		if (found == 0) {
-			Node *node = new Node();
-			node->node_id = _swarm_node.node_id;
-			node->x = _swarm_node.x;
-			node->y = _swarm_node.y;
-			_node_list.add(node);
-			_node_count++;
-
-			if (_node_count == _no_of_nodes) {
-				PX4_INFO("all swarm nodes are received");
-				Node *own_node = nullptr;
-				for (Node *node_tmp : _node_list) {
-					if (node_tmp->node_id == _own_id) {
-						own_node = node_tmp;
-						break;
-					}
-				}
-				if (own_node != nullptr) {
-					for (Node *node_tmp : _node_list) {
-						if (node_tmp->node_id != _own_id) {
-							ConsensusNode *consensus_node = new ConsensusNode();
-							consensus_node->offset_x = own_node->x - node_tmp->x;
-							consensus_node->offset_y = own_node->y - node_tmp->y;
-							consensus_node->weight = 1;
-							consensus_node->node_id = node_tmp->node_id;
-							_consensus_list.add(consensus_node);
-						}
-					}
-				}
-
+		} else {
+			if (_swarm_management.type == swarm_management_s::TYPE_UPDATE_FORMATION) {
+				PX4_WARN("formation update for swarm %d, but this node is in swarm %d: treating it as create",
+					 _swarm_management.swarm_id, _swarm_id);
 			}
 
+			if (_swarm_id != _swarm_management.swarm_id) {
+				reset();
+				PX4_INFO("swarm resetted");
+			}
 
+			_updating_formation = false;
+			_pending_list.clear();
+			_no_of_nodes = _swarm_management.no_of_nodes;
+			_leader_id = _swarm_management.leader_id;
+			_swarm_id = _swarm_management.swarm_id;
+
+			// if the node is the leader, leave swarm flight mode and return to hold
+			if (_leader_id == _own_id) {
+				vehicle_command_s command{};
+				command.timestamp = hrt_absolute_time();
+				command.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
+
+				// PX4 Custom Main/Sub mode parameters for Auto Loiter / Hold
+				command.param1 = 1.0f; // Main mode: Auto
+				command.param2 = 4.0f;
+				command.param3 = 3.0f; // Sub mode: Loiter
+
+				command.target_system = _param_mav_sys_id.get();
+				command.target_component = 1;
+				command.from_external = false;
+
+				_vehicle_command_pub.publish(command);
+			}
 		}
-
-
 	}
 
-	if (_swarm_information_sub.updated()) {
-		//PX4_INFO("swarm information received");
-		_swarm_information_sub.update(&_swarm_information);
+	if (_swarm_node_sub.update(&_swarm_node)) {
+		if (_updating_formation) {
+			if (_swarm_node.swarm_id == _swarm_id) {
+				// Re-sent nodes simply overwrite their pending offset
+				upsertNode(_pending_list, _swarm_node.node_id, _swarm_node.x, _swarm_node.y);
+
+				if (_pending_list.size() == _pending_expected) {
+					applyPendingFormation();
+				}
+			}
+
+		} else {
+			bool found = false;
+
+			for (Node *node : _node_list) {
+				if (node->node_id == _swarm_node.node_id) {
+					found = true;
+					break;
+				}
+			}
+
+			if (!found) {
+				upsertNode(_node_list, _swarm_node.node_id, _swarm_node.x, _swarm_node.y);
+				_node_count++;
+
+				if (_node_count == _no_of_nodes) {
+					PX4_INFO("all swarm nodes are received");
+					buildConsensus();
+				}
+			}
+		}
+	}
+
+	// Drain the queue: every neighbour sends position and attitude separately
+	while (_swarm_information_sub.update(&_swarm_information)) {
 		if (!std::isnan(_swarm_information.x)) {
-		for (ConsensusNode *consensus_node : _consensus_list) {
-			if (consensus_node->node_id == _swarm_information.node_id) {
-				consensus_node->x = _swarm_information.x;
-				consensus_node->y = _swarm_information.y;
-				consensus_node->z = _swarm_information.z;
-				consensus_node->r_abs = sqrt(((_position(0) - _swarm_information.x) * (_position(0) - _swarm_information.x)) + ((_position(1) - _swarm_information.y) * (_position(1) - _swarm_information.y)));
-				consensus_node->h_abs = fabs(_position(2) - _swarm_information.z);
-				consensus_node->h_sign = sign(_position(2) - _swarm_information.z);
+			for (ConsensusNode *consensus_node : _consensus_list) {
+				if (consensus_node->node_id == _swarm_information.node_id) {
+					consensus_node->x = _swarm_information.x;
+					consensus_node->y = _swarm_information.y;
+					consensus_node->z = _swarm_information.z;
+					consensus_node->r_abs = sqrtf(((_position(0) - _swarm_information.x) * (_position(0) - _swarm_information.x))
+								      + ((_position(1) - _swarm_information.y) * (_position(1) - _swarm_information.y)));
+					consensus_node->h_abs = fabsf(_position(2) - _swarm_information.z);
+					consensus_node->h_sign = sign(_position(2) - _swarm_information.z);
+					consensus_node->has_position = true;
+				}
 			}
 		}
-		}
+
 		if (!std::isnan(_swarm_information.yaw) && _swarm_information.node_id == _leader_id) {
 			_ref_yaw = _swarm_information.yaw;
 		}
+
 		if (!std::isnan(_swarm_information.z) && _swarm_information.node_id == _leader_id) {
 			_ref_z = _swarm_information.z;
 		}
 	}
 
-	if (_node_count == _no_of_nodes) {
+	if (_node_count == _no_of_nodes && _no_of_nodes > 1) {
 		float output_x = 0;
 		float output_y = 0;
 		float apf_sum = 0;
 
 		for (ConsensusNode *consensus_node : _consensus_list) {
-			output_x = output_x - ( consensus_node->weight * (_position(0) - consensus_node->x - consensus_node->offset_x));
-			output_y = output_y - ( consensus_node->weight * (_position(1) - consensus_node->y - consensus_node->offset_y));
-			if(consensus_node->h_abs <= 2 * _DELTA_H && consensus_node->r_abs <= 2 * _DELTA_R){
-				apf_sum = apf_sum + ((1/(consensus_node->h_abs + 1)) - (1/((2 * _DELTA_H) + 1))) * (consensus_node->h_sign/((consensus_node->h_abs + 1) * (consensus_node->h_abs + 1)));
+			if (!consensus_node->has_position) {
+				continue;
 			}
 
+			output_x = output_x - (consensus_node->weight * (_position(0) - consensus_node->x - consensus_node->offset_x));
+			output_y = output_y - (consensus_node->weight * (_position(1) - consensus_node->y - consensus_node->offset_y));
+
+			if (consensus_node->h_abs <= 2 * _DELTA_H && consensus_node->r_abs <= 2 * _DELTA_R) {
+				apf_sum = apf_sum + ((1 / (consensus_node->h_abs + 1)) - (1 / ((2 * _DELTA_H) + 1))) * (consensus_node->h_sign / ((
+						  consensus_node->h_abs + 1) * (consensus_node->h_abs + 1)));
+			}
 		}
-		apf_sum = apf_sum * (_Kh/(_no_of_nodes -1));
+
+		apf_sum = apf_sum * (_Kh / (_no_of_nodes - 1));
 
 		_velocity_setpoint(0) = output_x;
 		_velocity_setpoint(1) = output_y;
 		_velocity_setpoint(2) = ((_ref_z - _position(2)) * _kz) + apf_sum;
 		_yaw_setpoint = _ref_yaw;
-
 	}
-
-
-	//PX4_INFO("FlightTaskSwarm update was called!"); // report update
 
 	return true;
 }
 
+void FlightTaskSwarm::upsertNode(IntrusiveSortedList<Node *> &list, uint8_t node_id, float x, float y)
+{
+	for (Node *node : list) {
+		if (node->node_id == node_id) {
+			node->x = x;
+			node->y = y;
+			return;
+		}
+	}
 
-void FlightTaskSwarm::reset() {
+	Node *node = new Node();
+	node->node_id = node_id;
+	node->x = x;
+	node->y = y;
+	list.add(node);
+}
+
+// (Re)build the consensus neighbours from _node_list. Neighbour positions already known are kept
+// so the control output does not jump when the formation changes.
+void FlightTaskSwarm::buildConsensus()
+{
+	Node *own_node = nullptr;
+
+	for (Node *node : _node_list) {
+		if (node->node_id == _own_id) {
+			own_node = node;
+			break;
+		}
+	}
+
+	ConsensusNode *fresh[UINT8_MAX] {};
+	size_t count = 0;
+
+	if (own_node != nullptr) {
+		for (Node *node : _node_list) {
+			if (node->node_id == _own_id || count >= UINT8_MAX) {
+				continue;
+			}
+
+			ConsensusNode *consensus_node = new ConsensusNode();
+			consensus_node->node_id = node->node_id;
+			consensus_node->offset_x = own_node->x - node->x;
+			consensus_node->offset_y = own_node->y - node->y;
+			consensus_node->weight = 1;
+
+			for (ConsensusNode *old : _consensus_list) {
+				if (old->node_id == node->node_id) {
+					consensus_node->x = old->x;
+					consensus_node->y = old->y;
+					consensus_node->z = old->z;
+					consensus_node->r_abs = old->r_abs;
+					consensus_node->h_abs = old->h_abs;
+					consensus_node->h_sign = old->h_sign;
+					consensus_node->has_position = old->has_position;
+					break;
+				}
+			}
+
+			fresh[count++] = consensus_node;
+		}
+
+	} else {
+		PX4_WARN("swarm %d: this node (%d) is not part of the formation", _swarm_id, (int)_own_id);
+	}
+
+	_consensus_list.clear();
+
+	for (size_t i = 0; i < count; i++) {
+		_consensus_list.add(fresh[i]);
+	}
+}
+
+void FlightTaskSwarm::applyPendingFormation()
+{
+	// Move the pending nodes into the active list
+	Node *pending[UINT8_MAX] {};
+	size_t count = 0;
+
+	for (Node *node : _pending_list) {
+		if (count < UINT8_MAX) {
+			pending[count++] = node;
+		}
+	}
+
+	_node_list.clear();
+
+	for (size_t i = 0; i < count; i++) {
+		_pending_list.remove(pending[i]);
+		_node_list.add(pending[i]);
+	}
+
+	_pending_list.clear();
+	_no_of_nodes = _pending_expected;
+	_node_count = static_cast<uint8_t>(count);
+	_leader_id = _pending_leader_id;
+	_updating_formation = false;
+
+	buildConsensus();
+	PX4_INFO("swarm %d: new formation applied (%d nodes)", _swarm_id, _no_of_nodes);
+}
+
+void FlightTaskSwarm::reset()
+{
 	_swarm_id = 0;
 	_no_of_nodes = 0;
 	_node_count = 0;
 
 	_consensus_list.clear();
 	_node_list.clear();
-
-
-
+	_pending_list.clear();
+	_pending_expected = 0;
+	_updating_formation = false;
 }
 
 

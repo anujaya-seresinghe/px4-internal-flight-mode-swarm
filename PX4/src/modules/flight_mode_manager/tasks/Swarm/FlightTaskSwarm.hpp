@@ -71,16 +71,17 @@ class ConsensusNode : public IntrusiveSortedListNode<ConsensusNode *>
 
 {
 	public:
-		uint8_t node_id;
-		float x;
-		float y;
-		float z;
-		float offset_x;
-		float offset_y;
-		float weight;
-		float r_abs;
-		float h_abs;
-		int8_t h_sign;
+		uint8_t node_id{0};
+		float x{0.f};
+		float y{0.f};
+		float z{0.f};
+		float offset_x{0.f};
+		float offset_y{0.f};
+		float weight{1.f};
+		float r_abs{0.f};
+		float h_abs{0.f};
+		int8_t h_sign{0};
+		bool has_position{false}; // ignored by the control law until the neighbour's position arrived
 		 bool operator<=(const ConsensusNode &other) const
     {
         return node_id <= other.node_id;
@@ -117,12 +118,22 @@ private:
 	uint8_t _swarm_id = 0;
 	IntrusiveSortedList<Node *> _node_list;
 	IntrusiveSortedList<ConsensusNode *> _consensus_list;
+
+	// Formation update (SwarmManagement TYPE_UPDATE_FORMATION): new offsets are collected here
+	// while the current formation keeps flying, then swapped in once all of them arrived
+	IntrusiveSortedList<Node *> _pending_list;
+	uint8_t _pending_expected{0};
+	uint8_t _pending_leader_id{0};
+	bool _updating_formation{false};
 	swarm_management_s _swarm_management;
 	swarm_node_s _swarm_node;
 	swarm_information_s _swarm_information;
 
 	void reset();
 	int8_t sign(float x);
+	static void upsertNode(IntrusiveSortedList<Node *> &list, uint8_t node_id, float x, float y);
+	void buildConsensus();
+	void applyPendingFormation();
 
 
 

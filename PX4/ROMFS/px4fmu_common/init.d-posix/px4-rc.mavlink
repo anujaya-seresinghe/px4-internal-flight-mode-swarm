@@ -46,6 +46,11 @@ mavlink start -x -u $udp_onboard_gimbal_port_local -r 400000 -f -m gimbal -o $ud
 mavlink start -u ${SWARM_LOCAL_PORT} -o ${SWARM_REMOTE_PORT} -m swarm -r 100000 -p
 
 mavlink start -u ${TELEM_LOCAL_PORT} -o 15300 -m swarm -r 100000 -p
+# Extra telemetry for the web GCS (mode/arming come from HEARTBEAT, always sent)
+mavlink stream -u ${TELEM_LOCAL_PORT} -s GLOBAL_POSITION_INT -r 5
+mavlink stream -u ${TELEM_LOCAL_PORT} -s SYS_STATUS -r 1
+mavlink stream -u ${TELEM_LOCAL_PORT} -s EXTENDED_SYS_STATE -r 1
+mavlink stream -u ${TELEM_LOCAL_PORT} -s STATUSTEXT -r 10
 
 # mavlink start -u ${TELEM_LOCAL_PORT} -o 15300 -m normal -r 100000 -p
 

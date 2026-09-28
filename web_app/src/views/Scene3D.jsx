@@ -1,0 +1,348 @@
+import React, { useEffect, useMemo, useRef } from 'react';
+import * as THREE from 'three';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { OrbitControls, Grid, Html } from '@react-three/drei';
+import { useShallow } from 'zustand/react/shallow';
+import { useStore, isLinkLost } from '../store';
+import { COLORS, vehicleRoles, formationTargets } from '../lib/theme';
+import { sendCommand } from '../lib/commands';
+
+// Local NED (north, east, down) -> three.js (x = east, y = up, z = -north)
+const toThree = (n, e, d, out = new THREE.Vector3()) => out.set(e, -d, -n);
+
+const ARM_ANGLES = [Math.PI / 4, (3 * Math.PI) / 4, (5 * Math.PI) / 4, (7 * Math.PI) / 4];
+
+const colorFor = (v, role, now) => {
+  if (isLinkLost(v, now)) return COLORS.danger;
+  if (role?.isLeader) return COLORS.leader;
+  return role?.color || COLORS.vehicle;
+};
+
+/** Quadcopter built from primitives, driven directly from the store every frame. */
+const Drone = ({ id }) => {
+  const group = useRef();
+  const body = useRef();
+  const rotors = useRef([]);
+  const bodyMat = useRef();
+  const ring = useRef();
+  const drop = useRef();
+  const label = useRef();
+  const scaleRef = useRef(1);
+  const { camera } = useThree();
+
+  const dropGeom = useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+    return g;
+  }, []);
+
+  const tmp = useMemo(() => new THREE.Vector3(), []);
+  const euler = useMemo(() => new THREE.Euler(0, 0, 0, 'YXZ'), []);
+  const quat = useMemo(() => new THREE.Quaternion(), []);
+
+  useFrame((_, dt) => {
+    const { vehicles, selected, selectedSwarm, swarms, overlays } = useStore.getState();
+    const v = vehicles[id];
+    if (!v || !group.current) return;
+    const role = vehicleRoles(swarms)[id];
+    const now = Date.now();
+    const color = colorFor(v, role, now);
+
+    toThree(v.x, v.y, v.z, tmp);
+    group.current.position.lerp(tmp, 0.35);
+    euler.set(v.pitch, -v.yaw, -v.roll);
+    body.current.quaternion.slerp(quat.setFromEuler(euler), 0.35);
+
+    // Keep drones readable when zoomed out
+    const dist = camera.position.distanceTo(group.current.position);
+    scaleRef.current = Math.min(10, Math.max(1.4, dist / 22));
+    body.current.scale.setScalar(scaleRef.current);
+
+    bodyMat.current.color.set(color);
+    rotors.current.forEach((r, i) => {
+      if (r) r.rotation.y += v.armed ? dt * (i % 2 ? 40 : -40) : 0;
+    });
+
+    ring.current.visible = selected.includes(id) || !!swarms[selectedSwarm]?.members.includes(id);
+    ring.current.scale.setScalar(scaleRef.current);
+    ring.current.rotation.z += dt * 0.8;
+
+    // Altitude drop line
+    const dp = dropGeom.attributes.position.array;
+    dp[0] = 0; dp[1] = 0; dp[2] = 0;
+    dp[3] = 0; dp[4] = -group.current.position.y; dp[5] = 0;
+    dropGeom.attributes.position.needsUpdate = true;
+    drop.current.material.color.set(color);
+
+    if (label.current) {
+      label.current.style.display = overlays.labels ? '' : 'none';
+      const lost = isLinkLost(v, now);
+      label.current.dataset.state = lost ? 'lost' : role?.isLeader ? 'leader' : '';
+      label.current.children[1].textContent = lost ? 'NO LINK' : `${(-v.z).toFixed(1)} m`;
+    }
+  });
+
+  const onClick = (e) => {
+    e.stopPropagation();
+    const { select, pendingGoto } = useStore.getState();
+    if (pendingGoto) return;
+    select(id, e.nativeEvent.ctrlKey || e.nativeEvent.metaKey || e.nativeEvent.shiftKey ? 'toggle' : 'click');
+  };
+
+  return (
+    <>
+      <group ref={group}>
+        <group ref={body} onClick={onClick} onDoubleClick={(e) => (e.stopPropagation(), useStore.getState().setFollow(id))}>
+          <mesh castShadow>
+            <boxGeometry args={[0.35, 0.14, 0.5]} />
+            <meshStandardMaterial ref={bodyMat} metalness={0.3} roughness={0.5} />
+          </mesh>
+          {/* nose marker */}
+          <mesh position={[0, 0.02, -0.3]}>
+            <coneGeometry args={[0.08, 0.2, 12]} />
+            <meshStandardMaterial color={COLORS.danger} emissive={COLORS.danger} emissiveIntensity={0.4} />
+          </mesh>
+          {ARM_ANGLES.map((a, i) => {
+            const x = Math.sin(a) * 0.55;
+            const z = Math.cos(a) * 0.55;
+            return (
+              <group key={i}>
+                <mesh position={[x / 2, 0, z / 2]} rotation={[0, a, 0]}>
+                  <boxGeometry args={[0.05, 0.04, 0.78]} />
+                  <meshStandardMaterial color="#334155" />
+                </mesh>
+                <mesh position={[x, 0.06, z]}>
+                  <cylinderGeometry args={[0.04, 0.05, 0.1, 10]} />
+                  <meshStandardMaterial color="#1e293b" />
+                </mesh>
+                <mesh ref={(el) => (rotors.current[i] = el)} position={[x, 0.12, z]}>
+                  <cylinderGeometry args={[0.24, 0.24, 0.01, 24]} />
+                  <meshStandardMaterial color="#cbd5e1" transparent opacity={0.28} />
+                </mesh>
+              </group>
+            );
+          })}
+        </group>
+        <mesh ref={ring} rotation={[-Math.PI / 2, 0, 0]} visible={false}>
+          <ringGeometry args={[0.95, 1.1, 40, 1, 0, Math.PI * 1.7]} />
+          <meshBasicMaterial color={COLORS.select} side={THREE.DoubleSide} transparent opacity={0.9} />
+        </mesh>
+        <line ref={drop} geometry={dropGeom} frustumCulled={false}>
+          <lineBasicMaterial transparent opacity={0.3} />
+        </line>
+        <Html position={[0, 1.6, 0]} center zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
+          <div ref={label} className="label-3d">
+            <span>UAV {id}</span>
+            <span className="mono">—</span>
+          </div>
+        </Html>
+      </group>
+    </>
+  );
+};
+
+/** Leader-to-member links and formation slots for every known swarm. */
+const SwarmOverlay = () => {
+  const linkGeom = useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(256 * 6), 3));
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(256 * 6), 3));
+    g.setDrawRange(0, 0);
+    return g;
+  }, []);
+  const slots = useRef();
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const col = useMemo(() => new THREE.Color(), []);
+  const linkRef = useRef();
+
+  useFrame(() => {
+    const { swarms, vehicles, overlays } = useStore.getState();
+    const pos = linkGeom.attributes.position.array;
+    const cols = linkGeom.attributes.color.array;
+    let li = 0;
+    let si = 0;
+    const roles = vehicleRoles(swarms);
+    Object.values(swarms).forEach((s) => {
+      const leader = vehicles[s.leaderId];
+      if (!leader?.hasPosition) return;
+      col.set(roles[s.leaderId]?.color || COLORS.accent);
+      if (overlays.links) {
+        s.members.forEach((id) => {
+          const m = vehicles[id];
+          if (id === s.leaderId || !m?.hasPosition || li >= 256) return;
+          pos.set([leader.y, -leader.z, -leader.x, m.y, -m.z, -m.x], li * 6);
+          cols.set([col.r, col.g, col.b, col.r, col.g, col.b], li * 6);
+          li++;
+        });
+      }
+      if (overlays.targets) {
+        formationTargets(s, vehicles).forEach((t) => {
+          if (si >= 128) return;
+          dummy.position.set(t.y, -t.z, -t.x);
+          dummy.rotation.set(-Math.PI / 2, 0, 0);
+          dummy.updateMatrix();
+          slots.current.setMatrixAt(si, dummy.matrix);
+          slots.current.setColorAt(si, col);
+          si++;
+        });
+      }
+    });
+    linkGeom.setDrawRange(0, li * 2);
+    linkGeom.attributes.position.needsUpdate = true;
+    linkGeom.attributes.color.needsUpdate = true;
+    slots.current.count = si;
+    slots.current.instanceMatrix.needsUpdate = true;
+    if (slots.current.instanceColor) slots.current.instanceColor.needsUpdate = true;
+  });
+
+  return (
+    <>
+      <lineSegments ref={linkRef} geometry={linkGeom} frustumCulled={false}>
+        <lineBasicMaterial vertexColors transparent opacity={0.6} />
+      </lineSegments>
+      <instancedMesh ref={slots} args={[null, null, 128]} frustumCulled={false}>
+        <ringGeometry args={[0.7, 0.85, 32]} />
+        <meshBasicMaterial side={THREE.DoubleSide} transparent opacity={0.8} />
+      </instancedMesh>
+    </>
+  );
+};
+
+/** Camera follow + fit-to-selection handling. */
+const CameraRig = () => {
+  const { camera, controls } = useThree();
+  const focusSeq = useStore((s) => s.focus.seq);
+  const tmp = useMemo(() => new THREE.Vector3(), []);
+  const fitted = useRef(false);
+
+  const fit = (ids) => {
+    const { vehicles } = useStore.getState();
+    const pts = (ids.length ? ids : Object.keys(vehicles).map(Number))
+      .map((id) => vehicles[id])
+      .filter((v) => v?.hasPosition);
+    if (!pts.length || !controls) return false;
+    const box = new THREE.Box3();
+    pts.forEach((v) => box.expandByPoint(toThree(v.x, v.y, v.z)));
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(8, box.getSize(new THREE.Vector3()).length() * 0.8);
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    controls.target.copy(center);
+    camera.position.copy(center).addScaledVector(dir, radius * 2.4);
+    controls.update();
+    return true;
+  };
+
+  useEffect(() => {
+    if (focusSeq) fit(useStore.getState().focus.ids);
+  }, [focusSeq]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useFrame(() => {
+    const { follow, vehicles } = useStore.getState();
+    if (!fitted.current && Object.keys(vehicles).length && controls) fitted.current = fit([]);
+    if (!follow || !controls) return;
+    const v = vehicles[follow];
+    if (!v?.hasPosition) return;
+    toThree(v.x, v.y, v.z, tmp);
+    const delta = tmp.sub(controls.target).multiplyScalar(0.12);
+    controls.target.add(delta);
+    camera.position.add(delta);
+    controls.update();
+  });
+
+  return null;
+};
+
+const Ground = () => {
+  const onClick = (e) => {
+    const { pendingGoto, setPendingGoto, select } = useStore.getState();
+    if (e.delta > 4) return; // was an orbit drag
+    if (pendingGoto) {
+      e.stopPropagation();
+      sendCommand(pendingGoto.ids, 'goto', { north: -e.point.z, east: e.point.x });
+      setPendingGoto(null);
+      return;
+    }
+    select([]);
+  };
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]} onClick={onClick}>
+      <planeGeometry args={[4000, 4000]} />
+      <meshStandardMaterial color="#0b1322" />
+    </mesh>
+  );
+};
+
+const HomeMarker = () => (
+  <group>
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
+      <ringGeometry args={[0.9, 1.2, 40]} />
+      <meshBasicMaterial color={COLORS.success} side={THREE.DoubleSide} />
+    </mesh>
+    <Html position={[0, 0.2, 0]} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}>
+      <div className="home-3d">H</div>
+    </Html>
+  </group>
+);
+
+const AxisLabels = () => (
+  <>
+    {[
+      ['N', [0, 0.1, -30]],
+      ['E', [30, 0.1, 0]],
+    ].map(([t, p]) => (
+      <Html key={t} position={p} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}>
+        <div className="axis-3d">{t}</div>
+      </Html>
+    ))}
+  </>
+);
+
+export const Scene3D = () => {
+  const ids = useStore(useShallow((s) => Object.values(s.vehicles).filter((v) => v.hasPosition).map((v) => v.id)));
+  const pendingGoto = useStore((s) => s.pendingGoto);
+
+  return (
+    <div className={`view view-3d ${pendingGoto ? 'picking' : ''}`}>
+      <Canvas
+        camera={{ position: [-25, 22, 30], fov: 50, near: 0.1, far: 5000 }}
+        dpr={[1, 2]}
+        gl={{ antialias: true }}
+        onCreated={({ scene }) => {
+          scene.background = new THREE.Color(COLORS.bg);
+          scene.fog = new THREE.Fog(COLORS.bg, 150, 600);
+        }}
+      >
+        <ambientLight intensity={0.55} />
+        <directionalLight position={[30, 60, 20]} intensity={1.3} />
+        <hemisphereLight args={['#7dd3fc', '#0f172a', 0.35]} />
+        <Ground />
+        <Grid
+          infiniteGrid
+          cellSize={1}
+          sectionSize={10}
+          cellColor={COLORS.grid}
+          sectionColor={COLORS.gridMajor}
+          cellThickness={0.6}
+          sectionThickness={1}
+          fadeDistance={260}
+          fadeStrength={1.5}
+          position={[0, 0.005, 0]}
+        />
+        <HomeMarker />
+        <AxisLabels />
+        <SwarmOverlay />
+        {ids.map((id) => (
+          <Drone key={id} id={id} />
+        ))}
+        <OrbitControls makeDefault maxPolarAngle={Math.PI / 2 - 0.02} enableDamping dampingFactor={0.12} />
+        <CameraRig />
+      </Canvas>
+      {pendingGoto && (
+        <div className="view-banner">
+          Click the ground to send UAV {pendingGoto.ids.join(', ')} there · <kbd>Esc</kbd> to cancel
+        </div>
+      )}
+      <div className="view-hint">Drag to orbit · right-drag to pan · scroll to zoom · double-click a drone to follow</div>
+    </div>
+  );
+};

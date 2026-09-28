@@ -8308,7 +8308,7 @@
 
     <message id="601" name="SWARM_MANAGEMENT">
       <description>Swarm management</description>
-      <field type="uint8_t" name="type">Type of the message</field>
+      <field type="uint8_t" name="type">Type of the message: 1 = create swarm, 2 = update formation of the existing swarm swarm_id (followed by no_of_nodes SWARM_NODE with the new offsets)</field>
       <field type="uint8_t" name="swarm_id">ID of the swarm network</field>
       <field type="uint8_t" name="no_of_nodes">Number of nodes in the network</field>
       <field type="uint8_t" name="leader_id">ID of the swarm leader</field>

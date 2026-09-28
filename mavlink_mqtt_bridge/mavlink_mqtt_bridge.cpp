@@ -1,9 +1,15 @@
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <vector>
-#include <sstream>
+#include <string>
+#include <cmath>
+#include <limits>
 #include <cstring>
 #include <cerrno>
+#include <cstdlib>
+#include <thread>
+#include <chrono>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -13,35 +19,198 @@
 
 using json = nlohmann::json;
 
+// The bundled headers omit the MAV_CMD enum
 #ifndef MAV_CMD_DO_SET_MODE
 #define MAV_CMD_DO_SET_MODE 176
 #endif
+#define MAV_CMD_NAV_RETURN_TO_LAUNCH 20
+#define MAV_CMD_NAV_LAND             21
+#define MAV_CMD_NAV_TAKEOFF          22
+#define MAV_CMD_DO_REPOSITION        192
+#define MAV_CMD_COMPONENT_ARM_DISARM 400
 
 // Sender System & Component Constants
 #define INJECTOR_SYS_ID              255
 #define INJECTOR_COMP_ID             190 // MAV_COMP_ID_MISSIONPLANNER
 
-// PX4 Mode Constants
+// PX4 Mode Constants (PX4/src/modules/commander/px4_custom_mode.h)
 #define PX4_BASE_MODE_CUSTOM_ENABLED 1.0f
+#define PX4_CUSTOM_MAIN_MODE_POSCTL  3.0f
 #define PX4_CUSTOM_MAIN_MODE_AUTO    4.0f
+#define PX4_CUSTOM_SUB_MODE_LOITER   3.0f
 #define PX4_CUSTOM_SUB_MODE_SWARM   11.0f
+
+#define ARM_TAKEOFF_DELAY_US 300000
+#define EARTH_RADIUS_M 6378137.0
+
+static const float NaN = std::numeric_limits<float>::quiet_NaN();
 
 struct VehicleTarget {
     sockaddr_in address;
     uint16_t port;
 };
 
+// Latest position of a vehicle, needed to turn local NED targets into global ones
+struct VehicleState {
+    bool has_local = false;
+    bool has_global = false;
+    float x = 0, y = 0, z = 0;
+    double lat = 0, lon = 0; // degrees
+    float alt = 0;           // metres AMSL
+};
+
 // Global context structure passed to Mosquitto callbacks
 struct BridgeContext {
     int udp_sock;
-    std::map<uint8_t, VehicleTarget>* uav_registry;
+    struct mosquitto *mosq;
+    std::mutex mtx; // guards registry and state (UDP thread writes, MQTT thread reads)
+    std::map<uint8_t, VehicleTarget> uav_registry;
+    std::map<uint8_t, VehicleState> uav_state;
 };
 
 // Helper function to publish MQTT messages
-void publish_mqtt(struct mosquitto *mosq, const std::string &topic, const std::string &payload) {
-    int rc = mosquitto_publish(mosq, NULL, topic.c_str(), payload.length(), payload.c_str(), 0, false);
+void publish_mqtt(struct mosquitto *mosq, const std::string &topic, const json &payload) {
+    std::string s = payload.dump();
+    int rc = mosquitto_publish(mosq, NULL, topic.c_str(), s.length(), s.c_str(), 0, false);
     if (rc != MOSQ_ERR_SUCCESS) {
         std::cerr << "MQTT Publish failed (" << rc << "): " << mosquitto_strerror(rc) << std::endl;
+    }
+}
+
+// Report a GCS-side failure to the web app the same way the vehicle would
+void report(BridgeContext *ctx, uint8_t sys_id, uint16_t command, uint8_t result, const std::string &text) {
+    std::cerr << " -> SysID " << (int)sys_id << ": " << text << std::endl;
+    publish_mqtt(ctx->mosq, "uav/statustext", {{"sys_id", sys_id}, {"severity", 4}, {"text", "GCS: " + text}});
+    publish_mqtt(ctx->mosq, "uav/command_ack", {{"sys_id", sys_id}, {"command", command}, {"result", result}});
+}
+
+bool send_to(BridgeContext *ctx, uint8_t sys_id, const mavlink_message_t &msg) {
+    VehicleTarget target;
+    {
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+        auto it = ctx->uav_registry.find(sys_id);
+        if (it == ctx->uav_registry.end()) {
+            std::cerr << " -> Warning: SysID " << (int)sys_id << " not found in active UAV registry!" << std::endl;
+            return false;
+        }
+        target = it->second;
+    }
+    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+    sendto(ctx->udp_sock, buf, len, 0, (struct sockaddr*)&target.address, sizeof(target.address));
+    return true;
+}
+
+// Send to the listed vehicles, or to every known vehicle when the list is empty
+void send_to_many(BridgeContext *ctx, const std::vector<uint8_t> &ids, const mavlink_message_t &msg) {
+    std::vector<uint8_t> targets = ids;
+    if (targets.empty()) {
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+        for (const auto &pair : ctx->uav_registry) targets.push_back(pair.first);
+    }
+    for (uint8_t id : targets) send_to(ctx, id, msg);
+}
+
+void send_command_long(BridgeContext *ctx, uint8_t sys_id, uint16_t command,
+                       float p1 = 0, float p2 = 0, float p3 = 0, float p4 = 0,
+                       float p5 = 0, float p6 = 0, float p7 = 0) {
+    mavlink_message_t msg;
+    mavlink_msg_command_long_pack(INJECTOR_SYS_ID, INJECTOR_COMP_ID, &msg,
+                                  sys_id, MAV_COMP_ID_AUTOPILOT1, command, 0,
+                                  p1, p2, p3, p4, p5, p6, p7);
+    send_to(ctx, sys_id, msg);
+}
+
+void send_set_mode(BridgeContext *ctx, uint8_t sys_id, float main_mode, float sub_mode) {
+    send_command_long(ctx, sys_id, MAV_CMD_DO_SET_MODE, PX4_BASE_MODE_CUSTOM_ENABLED, main_mode, sub_mode);
+}
+
+bool get_state(BridgeContext *ctx, uint8_t sys_id, VehicleState &out) {
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+    auto it = ctx->uav_state.find(sys_id);
+    if (it == ctx->uav_state.end()) return false;
+    out = it->second;
+    return true;
+}
+
+// MAV_CMD_DO_REPOSITION towards a local NED target. The target is converted to a global
+// position using the vehicle's latest LOCAL_POSITION_NED / GLOBAL_POSITION_INT pair.
+void send_goto(BridgeContext *ctx, uint8_t sys_id, const json &params) {
+    VehicleState s;
+    if (!get_state(ctx, sys_id, s) || !s.has_global || !s.has_local) {
+        report(ctx, sys_id, MAV_CMD_DO_REPOSITION, MAV_RESULT_FAILED,
+               "no global position yet (is GLOBAL_POSITION_INT streamed on the telemetry link?)");
+        return;
+    }
+
+    double north = params.contains("north") ? params["north"].get<double>() : s.x;
+    double east = params.contains("east") ? params["east"].get<double>() : s.y;
+    double d_n = north - s.x;
+    double d_e = east - s.y;
+    double lat = s.lat + (d_n / EARTH_RADIUS_M) * 180.0 / M_PI;
+    double lon = s.lon + (d_e / (EARTH_RADIUS_M * std::cos(s.lat * M_PI / 180.0))) * 180.0 / M_PI;
+    float alt = NaN; // NaN keeps the current altitude
+    if (params.contains("up")) {
+        alt = s.alt + (params["up"].get<float>() - (-s.z));
+    }
+
+    mavlink_message_t msg;
+    mavlink_msg_command_int_pack(INJECTOR_SYS_ID, INJECTOR_COMP_ID, &msg,
+                                 sys_id, MAV_COMP_ID_AUTOPILOT1, MAV_FRAME_GLOBAL,
+                                 MAV_CMD_DO_REPOSITION, 0, 0,
+                                 -1.0f,                                   // default ground speed
+                                 (float)MAV_DO_REPOSITION_FLAGS_CHANGE_MODE,
+                                 0.0f, NaN,                               // keep yaw
+                                 (int32_t)std::llround(lat * 1e7),
+                                 (int32_t)std::llround(lon * 1e7),
+                                 alt);
+    send_to(ctx, sys_id, msg);
+}
+
+void handle_command(BridgeContext *ctx, const json &j) {
+    std::vector<uint8_t> ids = j.at("uav_ids").get<std::vector<uint8_t>>();
+    std::string command = j.at("command").get<std::string>();
+    json params = j.value("params", json::object());
+
+    std::cout << "=== uav/command '" << command << "' for " << ids.size() << " UAV(s) ===" << std::endl;
+
+    if (command == "takeoff") {
+        // Arm first, then MAV_CMD_NAV_TAKEOFF (like QGC). NaN altitude -> MIS_TAKEOFF_ALT
+        for (uint8_t id : ids) send_command_long(ctx, id, MAV_CMD_COMPONENT_ARM_DISARM, 1.0f);
+        usleep(ARM_TAKEOFF_DELAY_US);
+        for (uint8_t id : ids) {
+            float alt = NaN;
+            VehicleState s;
+            if (params.contains("altitude") && get_state(ctx, id, s) && s.has_global) {
+                alt = s.alt + params["altitude"].get<float>();
+            }
+            send_command_long(ctx, id, MAV_CMD_NAV_TAKEOFF, -1, 0, 0, NaN, NaN, NaN, alt);
+        }
+        return;
+    }
+
+    for (uint8_t id : ids) {
+        if (command == "arm") {
+            send_command_long(ctx, id, MAV_CMD_COMPONENT_ARM_DISARM, 1.0f);
+        } else if (command == "disarm") {
+            send_command_long(ctx, id, MAV_CMD_COMPONENT_ARM_DISARM, 0.0f);
+        } else if (command == "kill") {
+            send_command_long(ctx, id, MAV_CMD_COMPONENT_ARM_DISARM, 0.0f, 21196.0f);
+        } else if (command == "land") {
+            send_command_long(ctx, id, MAV_CMD_NAV_LAND, 0, 0, 0, NaN, NaN, NaN, NaN);
+        } else if (command == "rtl") {
+            send_command_long(ctx, id, MAV_CMD_NAV_RETURN_TO_LAUNCH);
+        } else if (command == "hold") {
+            send_set_mode(ctx, id, PX4_CUSTOM_MAIN_MODE_AUTO, PX4_CUSTOM_SUB_MODE_LOITER);
+        } else if (command == "position") {
+            send_set_mode(ctx, id, PX4_CUSTOM_MAIN_MODE_POSCTL, 0.0f);
+        } else if (command == "swarm") {
+            send_set_mode(ctx, id, PX4_CUSTOM_MAIN_MODE_AUTO, PX4_CUSTOM_SUB_MODE_SWARM);
+        } else if (command == "goto") {
+            send_goto(ctx, id, params);
+        } else {
+            report(ctx, id, 0, MAV_RESULT_UNSUPPORTED, "unknown command '" + command + "'");
+        }
     }
 }
 
@@ -52,6 +221,7 @@ void on_connect(struct mosquitto *mosq, void *obj, int rc) {
         mosquitto_subscribe(mosq, NULL, "uav/swarm_management", 0);
         mosquitto_subscribe(mosq, NULL, "uav/swarm_node", 0);
         mosquitto_subscribe(mosq, NULL, "uav/swarm_flight_mode", 0);
+        mosquitto_subscribe(mosq, NULL, "uav/command", 0);
     } else {
         std::cerr << "Mosquitto connect callback reported error code: " << rc << std::endl;
     }
@@ -62,7 +232,7 @@ void on_message(struct mosquitto *mosq, void *obj, const struct mosquitto_messag
     if (!msg || !msg->payload || msg->payloadlen == 0) return;
 
     BridgeContext *ctx = static_cast<BridgeContext*>(obj);
-    if (!ctx || !ctx->uav_registry) return;
+    if (!ctx) return;
 
     std::string topic(msg->topic);
     std::string payload_str(static_cast<char*>(msg->payload), msg->payloadlen);
@@ -70,122 +240,160 @@ void on_message(struct mosquitto *mosq, void *obj, const struct mosquitto_messag
     try {
         json j = json::parse(payload_str);
 
-        if (topic == "uav/swarm_flight_mode") {
+        if (topic == "uav/command") {
+            handle_command(ctx, j);
+        }
+        else if (topic == "uav/swarm_flight_mode") {
+            // Kept for older clients; equivalent to uav/command {"command": "swarm"}
             std::cout << "=== uav/swarm_flight_mode message received ===" << std::endl;
-            std::vector<uint8_t> target_ids = j.at("uav_ids").get<std::vector<uint8_t>>();
-
-            for (uint8_t target_sys_id : target_ids) {
-                auto it = ctx->uav_registry->find(target_sys_id);
-                if (it == ctx->uav_registry->end()) {
-                    std::cerr << " -> Warning: SysID " << (int)target_sys_id 
-                              << " not found in active UAV registry!" << std::endl;
-                    continue;
-                }
-
-                const VehicleTarget& target = it->second;
-
-                // Pack MAV_CMD_DO_SET_MODE command
-                mavlink_message_t cmd_msg;
-                mavlink_msg_command_long_pack(
-                    INJECTOR_SYS_ID,               // System ID (255)
-                    INJECTOR_COMP_ID,              // Component ID (190)
-                    &cmd_msg,
-                    target_sys_id,                 // Target System ID
-                    MAV_COMP_ID_AUTOPILOT1,        // Target Component ID (1)
-                    MAV_CMD_DO_SET_MODE,           // Command (176)
-                    0,                             // Confirmation
-                    PX4_BASE_MODE_CUSTOM_ENABLED,  // Param 1
-                    PX4_CUSTOM_MAIN_MODE_AUTO,     // Param 2
-                    PX4_CUSTOM_SUB_MODE_SWARM,     // Param 3
-                    0.0f, 0.0f, 0.0f, 0.0f         // Params 4-7
-                );
-
-                uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-                uint16_t len = mavlink_msg_to_send_buffer(buf, &cmd_msg);
-
-                sendto(
-                    ctx->udp_sock,
-                    buf,
-                    len,
-                    0,
-                    (struct sockaddr*)&target.address,
-                    sizeof(target.address)
-                );
-
-                std::cout << " -> Sent MAV_CMD_DO_SET_MODE (AUTO_SWARM) to SysID " 
-                          << (int)target_sys_id << " on Port " << target.port << std::endl;
+            for (uint8_t id : j.at("uav_ids").get<std::vector<uint8_t>>()) {
+                send_set_mode(ctx, id, PX4_CUSTOM_MAIN_MODE_AUTO, PX4_CUSTOM_SUB_MODE_SWARM);
+                std::cout << " -> Sent MAV_CMD_DO_SET_MODE (AUTO_SWARM) to SysID " << (int)id << std::endl;
             }
         }
         else if (topic == "uav/swarm_management") {
             std::cout << "=== swarm management message received ===" << std::endl;
-            uint8_t type = j.at("type").get<uint8_t>();
-            uint8_t swarm_id = j.at("swarm_id").get<uint8_t>();
-            uint8_t no_of_nodes = j.at("no_of_nodes").get<uint8_t>();
-            uint8_t leader_id = j.at("leader_id").get<uint8_t>();
-
             // Pack MAVLink message #601 (SWARM_MANAGEMENT)
             mavlink_message_t mav_msg;
             mavlink_msg_swarm_management_pack(
                 INJECTOR_SYS_ID,
                 INJECTOR_COMP_ID,
                 &mav_msg,
-                type,
-                swarm_id,
-                no_of_nodes,
-                leader_id
+                j.at("type").get<uint8_t>(),
+                j.at("swarm_id").get<uint8_t>(),
+                j.at("no_of_nodes").get<uint8_t>(),
+                j.at("leader_id").get<uint8_t>()
             );
-
-            uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-            uint16_t len = mavlink_msg_to_send_buffer(buf, &mav_msg);
-
-            for (const auto& pair : *(ctx->uav_registry)) {
-                const VehicleTarget& target = pair.second;
-                sendto(
-                    ctx->udp_sock,
-                    buf,
-                    len,
-                    0,
-                    (struct sockaddr*)&target.address,
-                    sizeof(target.address)
-                );
-            }
+            // Optional uav_ids restricts delivery to the swarm members so other swarms keep running
+            send_to_many(ctx, j.value("uav_ids", std::vector<uint8_t>{}), mav_msg);
         }
         else if (topic == "uav/swarm_node") {
             std::cout << "=== swarm node message received ===" << std::endl;
-            uint8_t swarm_id = j.at("swarm_id").get<uint8_t>();
-            uint8_t node_id = j.at("node_id").get<uint8_t>();
-            float x = j.at("x").get<float>();
-            float y = j.at("y").get<float>();
-
             // Pack MAVLink message #602 (SWARM_NODE)
             mavlink_message_t mav_msg;
             mavlink_msg_swarm_node_pack(
                 INJECTOR_SYS_ID,
                 INJECTOR_COMP_ID,
                 &mav_msg,
-                swarm_id,
-                node_id,
-                x,
-                y
+                j.at("swarm_id").get<uint8_t>(),
+                j.at("node_id").get<uint8_t>(),
+                j.at("x").get<float>(),
+                j.at("y").get<float>()
             );
-
-            uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-            uint16_t len = mavlink_msg_to_send_buffer(buf, &mav_msg);
-
-            for (const auto& pair : *(ctx->uav_registry)) {
-                const VehicleTarget& target = pair.second;
-                sendto(
-                    ctx->udp_sock,
-                    buf,
-                    len,
-                    0,
-                    (struct sockaddr*)&target.address,
-                    sizeof(target.address)
-                );
-            }
+            send_to_many(ctx, j.value("uav_ids", std::vector<uint8_t>{}), mav_msg);
         }
     } catch (const std::exception& e) {
         std::cerr << "Error handling MQTT message on topic " << topic << ": " << e.what() << std::endl;
+    }
+}
+
+void handle_mavlink(BridgeContext &ctx, const mavlink_message_t &msg) {
+    uint8_t sys_id = msg.sysid;
+    struct mosquitto *mosq = ctx.mosq;
+
+    switch (msg.msgid) {
+    case MAVLINK_MSG_ID_HEARTBEAT: {
+        mavlink_heartbeat_t hb;
+        mavlink_msg_heartbeat_decode(&msg, &hb);
+        if (msg.compid != MAV_COMP_ID_AUTOPILOT1 || hb.type == MAV_TYPE_GCS) break;
+        publish_mqtt(mosq, "uav/heartbeat", {
+            {"sys_id", sys_id},
+            {"type", hb.type},
+            {"base_mode", hb.base_mode},
+            {"custom_mode", hb.custom_mode},
+            {"system_status", hb.system_status},
+        });
+        break;
+    }
+    case MAVLINK_MSG_ID_ATTITUDE: {
+        mavlink_attitude_t att;
+        mavlink_msg_attitude_decode(&msg, &att);
+        publish_mqtt(mosq, "uav/attitude", {
+            {"sys_id", sys_id},
+            {"roll", att.roll}, {"pitch", att.pitch}, {"yaw", att.yaw},
+            {"rollspeed", att.rollspeed}, {"pitchspeed", att.pitchspeed}, {"yawspeed", att.yawspeed},
+        });
+        break;
+    }
+    case MAVLINK_MSG_ID_LOCAL_POSITION_NED: {
+        mavlink_local_position_ned_t pos;
+        mavlink_msg_local_position_ned_decode(&msg, &pos);
+        {
+            std::lock_guard<std::mutex> lock(ctx.mtx);
+            VehicleState &s = ctx.uav_state[sys_id];
+            s.has_local = true;
+            s.x = pos.x; s.y = pos.y; s.z = pos.z;
+        }
+        publish_mqtt(mosq, "uav/local_position_ned", {
+            {"sys_id", sys_id},
+            {"x", pos.x}, {"y", pos.y}, {"z", pos.z},
+            {"vx", pos.vx}, {"vy", pos.vy}, {"vz", pos.vz},
+        });
+        break;
+    }
+    case MAVLINK_MSG_ID_GLOBAL_POSITION_INT: {
+        mavlink_global_position_int_t gp;
+        mavlink_msg_global_position_int_decode(&msg, &gp);
+        {
+            std::lock_guard<std::mutex> lock(ctx.mtx);
+            VehicleState &s = ctx.uav_state[sys_id];
+            s.has_global = true;
+            s.lat = gp.lat / 1e7; s.lon = gp.lon / 1e7; s.alt = gp.alt / 1000.0f;
+        }
+        publish_mqtt(mosq, "uav/global_position", {
+            {"sys_id", sys_id},
+            {"lat", gp.lat / 1e7}, {"lon", gp.lon / 1e7},
+            {"alt", gp.alt / 1000.0}, {"relative_alt", gp.relative_alt / 1000.0},
+            {"hdg", gp.hdg == UINT16_MAX ? json(nullptr) : json(gp.hdg / 100.0)},
+        });
+        break;
+    }
+    case MAVLINK_MSG_ID_SYS_STATUS: {
+        mavlink_sys_status_t st;
+        mavlink_msg_sys_status_decode(&msg, &st);
+        publish_mqtt(mosq, "uav/sys_status", {
+            {"sys_id", sys_id},
+            {"voltage", st.voltage_battery == UINT16_MAX ? -1.0 : st.voltage_battery / 1000.0},
+            {"current", st.current_battery < 0 ? -1.0 : st.current_battery / 100.0},
+            {"battery_remaining", st.battery_remaining},
+            {"load", st.load / 10.0},
+        });
+        break;
+    }
+    case MAVLINK_MSG_ID_EXTENDED_SYS_STATE: {
+        mavlink_extended_sys_state_t es;
+        mavlink_msg_extended_sys_state_decode(&msg, &es);
+        publish_mqtt(mosq, "uav/extended_sys_state", {{"sys_id", sys_id}, {"landed_state", es.landed_state}});
+        break;
+    }
+    case MAVLINK_MSG_ID_COMMAND_ACK: {
+        mavlink_command_ack_t ack;
+        mavlink_msg_command_ack_decode(&msg, &ack);
+        if (ack.target_system != 0 && ack.target_system != INJECTOR_SYS_ID) break;
+        publish_mqtt(mosq, "uav/command_ack", {{"sys_id", sys_id}, {"command", ack.command}, {"result", ack.result}});
+        break;
+    }
+    case MAVLINK_MSG_ID_STATUSTEXT: {
+        mavlink_statustext_t txt;
+        mavlink_msg_statustext_decode(&msg, &txt);
+        std::string text(txt.text, strnlen(txt.text, sizeof(txt.text)));
+        publish_mqtt(mosq, "uav/statustext", {{"sys_id", sys_id}, {"severity", txt.severity}, {"text", text}});
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+// Heartbeat as a GCS so PX4 sees a ground station on this link. Without it the
+// "No connection to the GCS" preflight check blocks arming when NAV_DLL_ACT is set.
+void gcs_heartbeat_loop(BridgeContext *ctx) {
+    mavlink_message_t msg;
+    mavlink_msg_heartbeat_pack(INJECTOR_SYS_ID, INJECTOR_COMP_ID, &msg,
+                               MAV_TYPE_GCS, MAV_AUTOPILOT_INVALID, 0, 0, MAV_STATE_ACTIVE);
+    while (true) {
+        send_to_many(ctx, {}, msg);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 }
 
@@ -194,8 +402,6 @@ int main() {
     setvbuf(stderr, NULL, _IONBF, 0);
 
     std::cout << "=== MAVLINK TO MQTT TELEMETRY BRIDGE STARTED ===" << std::endl;
-
-    std::map<uint8_t, VehicleTarget> uav_registry;
 
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
@@ -219,7 +425,6 @@ int main() {
 
     BridgeContext bridge_ctx;
     bridge_ctx.udp_sock = sock;
-    bridge_ctx.uav_registry = &uav_registry;
 
     mosquitto_lib_init();
     struct mosquitto *mosq = mosquitto_new("mavlink_bridge_client", true, &bridge_ctx);
@@ -228,29 +433,33 @@ int main() {
         close(sock);
         return 1;
     }
+    bridge_ctx.mosq = mosq;
 
     mosquitto_connect_callback_set(mosq, on_connect);
     mosquitto_message_callback_set(mosq, on_message);
 
-    std::cout << "Connecting to MQTT broker on 127.0.0.1:1883..." << std::endl;
-    while (mosquitto_connect(mosq, "127.0.0.1", 1883, 60) != MOSQ_ERR_SUCCESS) {
+    const char *mqtt_host = std::getenv("MQTT_HOST") ? std::getenv("MQTT_HOST") : "127.0.0.1";
+    int mqtt_port = std::getenv("MQTT_PORT") ? std::atoi(std::getenv("MQTT_PORT")) : 1883;
+    std::cout << "Connecting to MQTT broker on " << mqtt_host << ":" << mqtt_port << "..." << std::endl;
+    while (mosquitto_connect(mosq, mqtt_host, mqtt_port, 60) != MOSQ_ERR_SUCCESS) {
         std::cerr << "MQTT Broker connection failed. Retrying in 1s..." << std::endl;
         sleep(1);
     }
     std::cout << "Successfully connected to MQTT Broker!" << std::endl;
 
     mosquitto_loop_start(mosq);
+    std::thread(gcs_heartbeat_loop, &bridge_ctx).detach();
 
     std::cout << "Listening for MAVLink streams on UDP port 15300..." << std::endl;
 
-    uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
+    uint8_t buffer[2048];
     mavlink_status_t rcv_status;
 
     while (true) {
         sockaddr_in sender_addr{};
         socklen_t addr_len = sizeof(sender_addr);
 
-        ssize_t bytes_rcvd = recvfrom(sock, buffer, sizeof(buffer), 0, 
+        ssize_t bytes_rcvd = recvfrom(sock, buffer, sizeof(buffer), 0,
                                       (struct sockaddr*)&sender_addr, &addr_len);
 
         if (bytes_rcvd < 0) {
@@ -262,55 +471,25 @@ int main() {
         mavlink_message_t msg;
         for (ssize_t i = 0; i < bytes_rcvd; ++i) {
             if (mavlink_parse_char(MAVLINK_COMM_0, buffer[i], &msg, &rcv_status)) {
-                
+
                 uint8_t sys_id = msg.sysid;
                 uint16_t sender_port = ntohs(sender_addr.sin_port);
 
-                if (uav_registry.find(sys_id) == uav_registry.end()) {
-                    uav_registry[sys_id] = { sender_addr, sender_port };
-                    std::cout << "-> Discovered New UAV! [SysID: " << (int)sys_id 
-                              << "] Mapped to Port: " << sender_port << std::endl;
-                } else if (uav_registry[sys_id].port != sender_port) {
-                    uav_registry[sys_id].address = sender_addr;
-                    uav_registry[sys_id].port = sender_port;
-                    std::cout << "-> Updated UAV [SysID: " << (int)sys_id 
-                              << "] Target Port: " << sender_port << std::endl;
+                {
+                    std::lock_guard<std::mutex> lock(bridge_ctx.mtx);
+                    auto it = bridge_ctx.uav_registry.find(sys_id);
+                    if (it == bridge_ctx.uav_registry.end()) {
+                        bridge_ctx.uav_registry[sys_id] = { sender_addr, sender_port };
+                        std::cout << "-> Discovered New UAV! [SysID: " << (int)sys_id
+                                  << "] Mapped to Port: " << sender_port << std::endl;
+                    } else if (it->second.port != sender_port) {
+                        it->second = { sender_addr, sender_port };
+                        std::cout << "-> Updated UAV [SysID: " << (int)sys_id
+                                  << "] Target Port: " << sender_port << std::endl;
+                    }
                 }
 
-                if (msg.msgid == MAVLINK_MSG_ID_ATTITUDE) {
-                    mavlink_attitude_t att;
-                    mavlink_msg_attitude_decode(&msg, &att);
-
-                    std::ostringstream json_ss;
-                    json_ss << "{"
-                            << "\"sys_id\":" << (int)sys_id << ","
-                            << "\"roll\":" << att.roll << ","
-                            << "\"pitch\":" << att.pitch << ","
-                            << "\"yaw\":" << att.yaw << ","
-                            << "\"rollspeed\":" << att.rollspeed << ","
-                            << "\"pitchspeed\":" << att.pitchspeed << ","
-                            << "\"yawspeed\":" << att.yawspeed
-                            << "}";
-
-                    publish_mqtt(mosq, "uav/attitude", json_ss.str());
-                }
-                else if (msg.msgid == MAVLINK_MSG_ID_LOCAL_POSITION_NED) {
-                    mavlink_local_position_ned_t pos;
-                    mavlink_msg_local_position_ned_decode(&msg, &pos);
-
-                    std::ostringstream json_ss;
-                    json_ss << "{"
-                            << "\"sys_id\":" << (int)sys_id << ","
-                            << "\"x\":" << pos.x << ","
-                            << "\"y\":" << pos.y << ","
-                            << "\"z\":" << pos.z << ","
-                            << "\"vx\":" << pos.vx << ","
-                            << "\"vy\":" << pos.vy << ","
-                            << "\"vz\":" << pos.vz
-                            << "}";
-
-                    publish_mqtt(mosq, "uav/local_position_ned", json_ss.str());
-                }
+                handle_mavlink(bridge_ctx, msg);
             }
         }
     }

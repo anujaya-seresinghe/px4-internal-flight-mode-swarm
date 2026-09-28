@@ -3538,8 +3538,11 @@ void MavlinkReceiver::handle_message_local_position_ned(mavlink_message_t *msg) 
 	//PX4_INFO("local position ned received");
 	mavlink_local_position_ned_t local_position_ned_msg;
 	mavlink_msg_local_position_ned_decode(msg, &local_position_ned_msg);
-	swarm_information_s swarm_information;
+	// Only position is known here: mark yaw as NaN so FlightTaskSwarm ignores it
+	swarm_information_s swarm_information{};
+	swarm_information.timestamp = hrt_absolute_time();
 	swarm_information.node_id = msg->sysid;
+	swarm_information.yaw = NAN;
 	swarm_information.x = local_position_ned_msg.x;
 	swarm_information.y = local_position_ned_msg.y;
 	swarm_information.z = local_position_ned_msg.z;
@@ -3550,8 +3553,13 @@ void MavlinkReceiver::handle_message_local_position_ned(mavlink_message_t *msg) 
 void MavlinkReceiver::handle_message_attitude(mavlink_message_t *msg){
 	mavlink_attitude_t attitude_msg;
 	mavlink_msg_attitude_decode(msg, &attitude_msg);
-	swarm_information_s swarm_information;
+	// Only yaw is known here: mark the position as NaN so FlightTaskSwarm ignores it
+	swarm_information_s swarm_information{};
+	swarm_information.timestamp = hrt_absolute_time();
 	swarm_information.node_id = msg->sysid;
+	swarm_information.x = NAN;
+	swarm_information.y = NAN;
+	swarm_information.z = NAN;
 	swarm_information.yaw = attitude_msg.yaw;
 	_swarm_information_pub.publish(swarm_information);
 }

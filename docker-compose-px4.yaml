@@ -1,13 +1,15 @@
-version: '3.8'
 
 services:
   px4_sitl:
     build:
       context: .
       dockerfile: DockerfilePX4
-    container_name: px4_gazebo_container
+    container_name: px4_swarm
     environment:
       - DISPLAY=${DISPLAY}
+      # Keep Gazebo transport discovery on loopback. Over Wi-Fi multicast, subscribers
+      # (including PX4's gz_bridge) get dropped and lazy sensors like baro/mag/GPS stop.
+      - GZ_IP=127.0.0.1
     volumes:
       # X11 display socket for Gazebo GUI rendering
       - /tmp/.X11-unix:/tmp/.X11-unix:rw

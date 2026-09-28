@@ -1,4 +1,5 @@
-version: "3.8"
+name: px4-swarm-gcs
+
 
 services:
   mosquitto:
@@ -19,6 +20,9 @@ services:
       - mosquitto
     restart: unless-stopped
     network_mode: host
+    environment:
+      - MQTT_HOST=127.0.0.1
+      - MQTT_PORT=1884
 
      
   service-web:
