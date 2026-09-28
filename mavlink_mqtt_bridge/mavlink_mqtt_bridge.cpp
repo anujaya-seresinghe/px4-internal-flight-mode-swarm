@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -28,6 +29,10 @@ using json = nlohmann::json;
 #define MAV_CMD_NAV_TAKEOFF          22
 #define MAV_CMD_DO_REPOSITION        192
 #define MAV_CMD_COMPONENT_ARM_DISARM 400
+#define MAV_CMD_DO_VTOL_TRANSITION   3000
+#define MAV_CMD_NAV_VTOL_TAKEOFF     84
+#define VTOL_STATE_MC 3.0f             // MAV_VTOL_STATE_MC
+#define VTOL_STATE_FW 4.0f             // MAV_VTOL_STATE_FW
 
 // Sender System & Component Constants
 #define INJECTOR_SYS_ID              255
@@ -57,6 +62,7 @@ struct VehicleState {
     float x = 0, y = 0, z = 0;
     double lat = 0, lon = 0; // degrees
     float alt = 0;           // metres AMSL
+    float yaw = 0;           // rad, from ATTITUDE
 };
 
 // Global context structure passed to Mosquitto callbacks
@@ -64,8 +70,11 @@ struct BridgeContext {
     int udp_sock;
     struct mosquitto *mosq;
     std::mutex mtx; // guards registry and state (UDP thread writes, MQTT thread reads)
-    std::map<uint8_t, VehicleTarget> uav_registry;
+    std::map<uint8_t, VehicleTarget> uav_registry;   // PX4 autopilots (component 1)
     std::map<uint8_t, VehicleState> uav_state;
+    // ROS 2 Swarm mode nodes (component MAV_COMP_ID_ONBOARD_COMPUTER), keyed by vehicle sys_id
+    std::map<uint8_t, VehicleTarget> companion_registry;
+    std::map<uint8_t, uint32_t> companion_custom_mode; // custom_mode that selects their Swarm mode
 };
 
 // Helper function to publish MQTT messages
@@ -109,6 +118,28 @@ void send_to_many(BridgeContext *ctx, const std::vector<uint8_t> &ids, const mav
         for (const auto &pair : ctx->uav_registry) targets.push_back(pair.first);
     }
     for (uint8_t id : targets) send_to(ctx, id, msg);
+}
+
+void send_udp(BridgeContext *ctx, const VehicleTarget &target, const mavlink_message_t &msg) {
+    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+    sendto(ctx->udp_sock, buf, len, 0, (struct sockaddr*)&target.address, sizeof(target.address));
+}
+
+// Swarm configuration goes to the PX4 autopilots (internal Swarm mode) and to the ROS 2
+// companion nodes (external Swarm mode); each only acts on it while its mode is active
+void send_swarm_msg(BridgeContext *ctx, const std::vector<uint8_t> &ids, const mavlink_message_t &msg) {
+    send_to_many(ctx, ids, msg);
+    std::vector<VehicleTarget> companions;
+    {
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+        for (const auto &pair : ctx->companion_registry) {
+            if (ids.empty() || std::find(ids.begin(), ids.end(), pair.first) != ids.end()) {
+                companions.push_back(pair.second);
+            }
+        }
+    }
+    for (const auto &target : companions) send_udp(ctx, target, msg);
 }
 
 void send_command_long(BridgeContext *ctx, uint8_t sys_id, uint16_t command,
@@ -174,6 +205,46 @@ void handle_command(BridgeContext *ctx, const json &j) {
 
     std::cout << "=== uav/command '" << command << "' for " << ids.size() << " UAV(s) ===" << std::endl;
 
+    if (command == "vtol_takeoff") {
+        // MAV_CMD_NAV_VTOL_TAKEOFF: climb vertically to `altitude`, transition to fixed-wing towards a
+        // loiter point `loiter_distance` ahead along the vehicle's heading, then loiter there.
+        // PX4 only accepts params 3-7 for this command over MAVLink, and loiters at
+        // takeoff + VTO_LOITER_ALT (same for every vehicle by default). Set VTO_LOITER_ALT per vehicle
+        // first so each VTOL keeps its own altitude layer.
+        const float altitude = params.value("altitude", 40.0f);
+        const double distance = params.value("loiter_distance", 300.0);
+        for (uint8_t id : ids) {
+            mavlink_message_t msg;
+            char name[17] = "VTO_LOITER_ALT";
+            mavlink_msg_param_set_pack(INJECTOR_SYS_ID, INJECTOR_COMP_ID, &msg, id, MAV_COMP_ID_AUTOPILOT1,
+                                       name, altitude, MAV_PARAM_TYPE_REAL32);
+            send_to(ctx, id, msg);
+        }
+        usleep(ARM_TAKEOFF_DELAY_US);
+        for (uint8_t id : ids) send_command_long(ctx, id, MAV_CMD_COMPONENT_ARM_DISARM, 1.0f);
+        usleep(ARM_TAKEOFF_DELAY_US);
+        for (uint8_t id : ids) {
+            VehicleState s;
+            if (!get_state(ctx, id, s) || !s.has_global) {
+                report(ctx, id, MAV_CMD_NAV_VTOL_TAKEOFF, MAV_RESULT_FAILED, "no global position yet for VTOL takeoff");
+                continue;
+            }
+            const double heading = params.contains("heading_deg") ? params["heading_deg"].get<double>() * M_PI / 180.0 : s.yaw;
+            const double lat = s.lat + (distance * std::cos(heading) / EARTH_RADIUS_M) * 180.0 / M_PI;
+            const double lon = s.lon + (distance * std::sin(heading) / (EARTH_RADIUS_M * std::cos(s.lat * M_PI / 180.0))) * 180.0 / M_PI;
+            mavlink_message_t msg;
+            mavlink_msg_command_int_pack(INJECTOR_SYS_ID, INJECTOR_COMP_ID, &msg,
+                                         id, MAV_COMP_ID_AUTOPILOT1, MAV_FRAME_GLOBAL,
+                                         MAV_CMD_NAV_VTOL_TAKEOFF, 0, 0,
+                                         NaN, NaN, NaN, NaN,              // params 1-4 unused (transition heads for the loiter point)
+                                         (int32_t)std::llround(lat * 1e7),
+                                         (int32_t)std::llround(lon * 1e7),
+                                         s.alt + altitude);               // transition altitude AMSL
+            send_to(ctx, id, msg);
+        }
+        return;
+    }
+
     if (command == "takeoff") {
         // Arm first, then MAV_CMD_NAV_TAKEOFF (like QGC). NaN altitude -> MIS_TAKEOFF_ALT
         for (uint8_t id : ids) send_command_long(ctx, id, MAV_CMD_COMPONENT_ARM_DISARM, 1.0f);
@@ -194,6 +265,10 @@ void handle_command(BridgeContext *ctx, const json &j) {
             send_command_long(ctx, id, MAV_CMD_COMPONENT_ARM_DISARM, 1.0f);
         } else if (command == "disarm") {
             send_command_long(ctx, id, MAV_CMD_COMPONENT_ARM_DISARM, 0.0f);
+        } else if (command == "transition_fw") {
+            send_command_long(ctx, id, MAV_CMD_DO_VTOL_TRANSITION, VTOL_STATE_FW);
+        } else if (command == "transition_mc") {
+            send_command_long(ctx, id, MAV_CMD_DO_VTOL_TRANSITION, VTOL_STATE_MC);
         } else if (command == "kill") {
             send_command_long(ctx, id, MAV_CMD_COMPONENT_ARM_DISARM, 0.0f, 21196.0f);
         } else if (command == "land") {
@@ -204,6 +279,19 @@ void handle_command(BridgeContext *ctx, const json &j) {
             send_set_mode(ctx, id, PX4_CUSTOM_MAIN_MODE_AUTO, PX4_CUSTOM_SUB_MODE_LOITER);
         } else if (command == "position") {
             send_set_mode(ctx, id, PX4_CUSTOM_MAIN_MODE_POSCTL, 0.0f);
+        } else if (command == "swarm" && params.value("external", false)) {
+            // ROS 2 external Swarm mode: its custom_mode comes from the companion's heartbeat
+            uint32_t custom_mode = 0;
+            {
+                std::lock_guard<std::mutex> lock(ctx->mtx);
+                auto it = ctx->companion_custom_mode.find(id);
+                if (it != ctx->companion_custom_mode.end()) custom_mode = it->second;
+            }
+            if (custom_mode == 0) {
+                report(ctx, id, MAV_CMD_DO_SET_MODE, MAV_RESULT_FAILED, "no ROS 2 Swarm mode registered for this vehicle");
+            } else {
+                send_set_mode(ctx, id, (float)((custom_mode >> 16) & 0xff), (float)((custom_mode >> 24) & 0xff));
+            }
         } else if (command == "swarm") {
             send_set_mode(ctx, id, PX4_CUSTOM_MAIN_MODE_AUTO, PX4_CUSTOM_SUB_MODE_SWARM);
         } else if (command == "goto") {
@@ -265,7 +353,7 @@ void on_message(struct mosquitto *mosq, void *obj, const struct mosquitto_messag
                 j.at("leader_id").get<uint8_t>()
             );
             // Optional uav_ids restricts delivery to the swarm members so other swarms keep running
-            send_to_many(ctx, j.value("uav_ids", std::vector<uint8_t>{}), mav_msg);
+            send_swarm_msg(ctx, j.value("uav_ids", std::vector<uint8_t>{}), mav_msg);
         }
         else if (topic == "uav/swarm_node") {
             std::cout << "=== swarm node message received ===" << std::endl;
@@ -280,7 +368,7 @@ void on_message(struct mosquitto *mosq, void *obj, const struct mosquitto_messag
                 j.at("x").get<float>(),
                 j.at("y").get<float>()
             );
-            send_to_many(ctx, j.value("uav_ids", std::vector<uint8_t>{}), mav_msg);
+            send_swarm_msg(ctx, j.value("uav_ids", std::vector<uint8_t>{}), mav_msg);
         }
     } catch (const std::exception& e) {
         std::cerr << "Error handling MQTT message on topic " << topic << ": " << e.what() << std::endl;
@@ -295,6 +383,18 @@ void handle_mavlink(BridgeContext &ctx, const mavlink_message_t &msg) {
     case MAVLINK_MSG_ID_HEARTBEAT: {
         mavlink_heartbeat_t hb;
         mavlink_msg_heartbeat_decode(&msg, &hb);
+        if (msg.compid == MAV_COMP_ID_ONBOARD_COMPUTER) {
+            {
+                std::lock_guard<std::mutex> lock(ctx.mtx);
+                ctx.companion_custom_mode[sys_id] = hb.custom_mode;
+            }
+            publish_mqtt(mosq, "uav/companion", {
+                {"sys_id", sys_id},
+                {"custom_mode", hb.custom_mode},
+                {"active", (hb.base_mode & MAV_MODE_FLAG_CUSTOM_MODE_ENABLED) != 0},
+            });
+            break;
+        }
         if (msg.compid != MAV_COMP_ID_AUTOPILOT1 || hb.type == MAV_TYPE_GCS) break;
         publish_mqtt(mosq, "uav/heartbeat", {
             {"sys_id", sys_id},
@@ -308,6 +408,10 @@ void handle_mavlink(BridgeContext &ctx, const mavlink_message_t &msg) {
     case MAVLINK_MSG_ID_ATTITUDE: {
         mavlink_attitude_t att;
         mavlink_msg_attitude_decode(&msg, &att);
+        {
+            std::lock_guard<std::mutex> lock(ctx.mtx);
+            ctx.uav_state[sys_id].yaw = att.yaw;
+        }
         publish_mqtt(mosq, "uav/attitude", {
             {"sys_id", sys_id},
             {"roll", att.roll}, {"pitch", att.pitch}, {"yaw", att.yaw},
@@ -363,7 +467,7 @@ void handle_mavlink(BridgeContext &ctx, const mavlink_message_t &msg) {
     case MAVLINK_MSG_ID_EXTENDED_SYS_STATE: {
         mavlink_extended_sys_state_t es;
         mavlink_msg_extended_sys_state_decode(&msg, &es);
-        publish_mqtt(mosq, "uav/extended_sys_state", {{"sys_id", sys_id}, {"landed_state", es.landed_state}});
+        publish_mqtt(mosq, "uav/extended_sys_state", {{"sys_id", sys_id}, {"landed_state", es.landed_state}, {"vtol_state", es.vtol_state}});
         break;
     }
     case MAVLINK_MSG_ID_COMMAND_ACK: {
@@ -477,14 +581,20 @@ int main() {
 
                 {
                     std::lock_guard<std::mutex> lock(bridge_ctx.mtx);
-                    auto it = bridge_ctx.uav_registry.find(sys_id);
-                    if (it == bridge_ctx.uav_registry.end()) {
-                        bridge_ctx.uav_registry[sys_id] = { sender_addr, sender_port };
-                        std::cout << "-> Discovered New UAV! [SysID: " << (int)sys_id
+                    // Keep autopilots and companions apart: they share the sys_id
+                    const bool companion = msg.compid == MAV_COMP_ID_ONBOARD_COMPUTER;
+                    auto &registry = companion ? bridge_ctx.companion_registry : bridge_ctx.uav_registry;
+                    const char *what = companion ? "ROS 2 Swarm mode node" : "UAV";
+                    auto it = registry.find(sys_id);
+                    if (!companion && msg.compid != MAV_COMP_ID_AUTOPILOT1) {
+                        // other components: nothing to register
+                    } else if (it == registry.end()) {
+                        registry[sys_id] = { sender_addr, sender_port };
+                        std::cout << "-> Discovered " << what << " [SysID: " << (int)sys_id
                                   << "] Mapped to Port: " << sender_port << std::endl;
                     } else if (it->second.port != sender_port) {
                         it->second = { sender_addr, sender_port };
-                        std::cout << "-> Updated UAV [SysID: " << (int)sys_id
+                        std::cout << "-> Updated " << what << " [SysID: " << (int)sys_id
                                   << "] Target Port: " << sender_port << std::endl;
                     }
                 }

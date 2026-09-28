@@ -5,6 +5,7 @@ import { OrbitControls, Grid, Html } from '@react-three/drei';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, isLinkLost } from '../store';
 import { COLORS, vehicleRoles, formationTargets } from '../lib/theme';
+import { isVtol } from '../lib/px4';
 import { sendCommand } from '../lib/commands';
 
 // Local NED (north, east, down) -> three.js (x = east, y = up, z = -north)
@@ -18,11 +19,114 @@ const colorFor = (v, role, now) => {
   return role?.color || COLORS.vehicle;
 };
 
-/** Quadcopter built from primitives, driven directly from the store every frame. */
+const NoseMarker = ({ z }) => (
+  <mesh position={[0, 0.02, z]} rotation={[-Math.PI / 2, 0, 0]}>
+    <coneGeometry args={[0.08, 0.2, 12]} />
+    <meshStandardMaterial color={COLORS.danger} emissive={COLORS.danger} emissiveIntensity={0.4} />
+  </mesh>
+);
+
+/** Quadcopter (x500) from primitives. Nose points to -Z. */
+const QuadModel = ({ bodyMat, rotors }) => (
+  <>
+    <mesh castShadow>
+      <boxGeometry args={[0.35, 0.14, 0.5]} />
+      <meshStandardMaterial ref={bodyMat} metalness={0.3} roughness={0.5} />
+    </mesh>
+    <NoseMarker z={-0.3} />
+    {ARM_ANGLES.map((a, i) => {
+      const x = Math.sin(a) * 0.55;
+      const z = Math.cos(a) * 0.55;
+      return (
+        <group key={i}>
+          <mesh position={[x / 2, 0, z / 2]} rotation={[0, a, 0]}>
+            <boxGeometry args={[0.05, 0.04, 0.78]} />
+            <meshStandardMaterial color="#334155" />
+          </mesh>
+          <mesh position={[x, 0.06, z]}>
+            <cylinderGeometry args={[0.04, 0.05, 0.1, 10]} />
+            <meshStandardMaterial color="#1e293b" />
+          </mesh>
+          <mesh ref={(el) => (rotors.current[i] = el)} position={[x, 0.12, z]}>
+            <cylinderGeometry args={[0.24, 0.24, 0.01, 24]} />
+            <meshStandardMaterial color="#cbd5e1" transparent opacity={0.28} />
+          </mesh>
+        </group>
+      );
+    })}
+  </>
+);
+
+// Standard VTOL (gz standard_vtol): fuselage, main wing, tail, two booms with four lift
+// rotors and a pusher propeller. Nose points to -Z, span ~2 m.
+const VTOL_LIFT_ROTORS = [[-0.42, -0.42], [0.42, -0.42], [-0.42, 0.42], [0.42, 0.42]];
+
+const VtolModel = ({ bodyMat, rotors, pusher }) => (
+  <>
+    {/* fuselage */}
+    <mesh rotation={[Math.PI / 2, 0, 0]} castShadow>
+      <cylinderGeometry args={[0.08, 0.06, 1.3, 16]} />
+      <meshStandardMaterial ref={bodyMat} metalness={0.3} roughness={0.5} />
+    </mesh>
+    <mesh position={[0, 0, -0.65]} rotation={[-Math.PI / 2, 0, 0]}>
+      <coneGeometry args={[0.08, 0.2, 16]} />
+      <meshStandardMaterial color="#e2e8f0" metalness={0.2} roughness={0.5} />
+    </mesh>
+    <NoseMarker z={-0.8} />
+    {/* main wing */}
+    <mesh position={[0, 0.03, -0.05]} castShadow>
+      <boxGeometry args={[2.0, 0.025, 0.28]} />
+      <meshStandardMaterial color="#cbd5e1" metalness={0.2} roughness={0.6} />
+    </mesh>
+    {/* tail: horizontal stabilizer + vertical fin */}
+    <mesh position={[0, 0.02, 0.58]}>
+      <boxGeometry args={[0.62, 0.02, 0.16]} />
+      <meshStandardMaterial color="#cbd5e1" metalness={0.2} roughness={0.6} />
+    </mesh>
+    <mesh position={[0, 0.14, 0.58]}>
+      <boxGeometry args={[0.02, 0.24, 0.18]} />
+      <meshStandardMaterial color="#cbd5e1" metalness={0.2} roughness={0.6} />
+    </mesh>
+    {/* booms and lift rotors */}
+    {[-0.42, 0.42].map((x) => (
+      <mesh key={x} position={[x, 0, 0]}>
+        <boxGeometry args={[0.04, 0.04, 1.0]} />
+        <meshStandardMaterial color="#334155" />
+      </mesh>
+    ))}
+    {VTOL_LIFT_ROTORS.map(([x, z], i) => (
+      <group key={i}>
+        <mesh position={[x, 0.05, z]}>
+          <cylinderGeometry args={[0.035, 0.04, 0.08, 10]} />
+          <meshStandardMaterial color="#1e293b" />
+        </mesh>
+        <mesh ref={(el) => (rotors.current[i] = el)} position={[x, 0.1, z]}>
+          <cylinderGeometry args={[0.2, 0.2, 0.01, 24]} />
+          <meshStandardMaterial color="#cbd5e1" transparent opacity={0.28} />
+        </mesh>
+      </group>
+    ))}
+    {/* pusher propeller: disc in the XY plane at the tail, spins about Z */}
+    <group ref={pusher} position={[0, 0, 0.7]}>
+      <mesh rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.18, 0.18, 0.01, 24]} />
+        <meshStandardMaterial color="#cbd5e1" transparent opacity={0.3} />
+      </mesh>
+      <mesh rotation={[0, 0, 0]}>
+        <boxGeometry args={[0.34, 0.03, 0.01]} />
+        <meshStandardMaterial color="#475569" />
+      </mesh>
+    </group>
+  </>
+);
+
+/** Quadcopter or VTOL, driven directly from the store every frame. */
 const Drone = ({ id }) => {
+  const vtol = useStore((s) => isVtol(s.vehicles[id]));
   const group = useRef();
   const body = useRef();
   const rotors = useRef([]);
+  const pusher = useRef();
   const bodyMat = useRef();
   const ring = useRef();
   const drop = useRef();
@@ -55,13 +159,20 @@ const Drone = ({ id }) => {
 
     // Keep drones readable when zoomed out
     const dist = camera.position.distanceTo(group.current.position);
-    scaleRef.current = Math.min(10, Math.max(1.4, dist / 22));
+    // (fixed-wing swarms spread over hundreds of metres, so allow a large scale-up)
+    scaleRef.current = Math.min(500, Math.max(1.4, dist / 22)); // ~constant on-screen size far away
     body.current.scale.setScalar(scaleRef.current);
 
     bodyMat.current.color.set(color);
+    // VTOL: lift rotors in multicopter phase and transitions, pusher in fixed-wing and transitions
+    // (MAV_VTOL_STATE 1/2 = transitions, 3 = MC, 4 = FW)
+    const vs = v.vtolState ?? 0;
+    const liftOn = v.armed && (!vtol || vs !== 4);
+    const pusherOn = v.armed && vtol && vs !== 3;
     rotors.current.forEach((r, i) => {
-      if (r) r.rotation.y += v.armed ? dt * (i % 2 ? 40 : -40) : 0;
+      if (r) r.rotation.y += liftOn ? dt * (i % 2 ? 40 : -40) : 0;
     });
+    if (pusher.current && pusherOn) pusher.current.rotation.z += dt * 45;
 
     ring.current.visible = selected.includes(id) || !!swarms[selectedSwarm]?.members.includes(id);
     ring.current.scale.setScalar(scaleRef.current);
@@ -93,35 +204,11 @@ const Drone = ({ id }) => {
     <>
       <group ref={group}>
         <group ref={body} onClick={onClick} onDoubleClick={(e) => (e.stopPropagation(), useStore.getState().setFollow(id))}>
-          <mesh castShadow>
-            <boxGeometry args={[0.35, 0.14, 0.5]} />
-            <meshStandardMaterial ref={bodyMat} metalness={0.3} roughness={0.5} />
-          </mesh>
-          {/* nose marker */}
-          <mesh position={[0, 0.02, -0.3]}>
-            <coneGeometry args={[0.08, 0.2, 12]} />
-            <meshStandardMaterial color={COLORS.danger} emissive={COLORS.danger} emissiveIntensity={0.4} />
-          </mesh>
-          {ARM_ANGLES.map((a, i) => {
-            const x = Math.sin(a) * 0.55;
-            const z = Math.cos(a) * 0.55;
-            return (
-              <group key={i}>
-                <mesh position={[x / 2, 0, z / 2]} rotation={[0, a, 0]}>
-                  <boxGeometry args={[0.05, 0.04, 0.78]} />
-                  <meshStandardMaterial color="#334155" />
-                </mesh>
-                <mesh position={[x, 0.06, z]}>
-                  <cylinderGeometry args={[0.04, 0.05, 0.1, 10]} />
-                  <meshStandardMaterial color="#1e293b" />
-                </mesh>
-                <mesh ref={(el) => (rotors.current[i] = el)} position={[x, 0.12, z]}>
-                  <cylinderGeometry args={[0.24, 0.24, 0.01, 24]} />
-                  <meshStandardMaterial color="#cbd5e1" transparent opacity={0.28} />
-                </mesh>
-              </group>
-            );
-          })}
+          {vtol ? (
+            <VtolModel bodyMat={bodyMat} rotors={rotors} pusher={pusher} />
+          ) : (
+            <QuadModel bodyMat={bodyMat} rotors={rotors} />
+          )}
         </group>
         <mesh ref={ring} rotation={[-Math.PI / 2, 0, 0]} visible={false}>
           <ringGeometry args={[0.95, 1.1, 40, 1, 0, Math.PI * 1.7]} />
@@ -266,7 +353,7 @@ const Ground = () => {
   };
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]} onClick={onClick}>
-      <planeGeometry args={[4000, 4000]} />
+      <planeGeometry args={[40000, 40000]} />
       <meshStandardMaterial color="#0b1322" />
     </mesh>
   );
@@ -304,12 +391,13 @@ export const Scene3D = () => {
   return (
     <div className={`view view-3d ${pendingGoto ? 'picking' : ''}`}>
       <Canvas
-        camera={{ position: [-25, 22, 30], fov: 50, near: 0.1, far: 5000 }}
+        camera={{ position: [-25, 22, 30], fov: 50, near: 0.1, far: 20000 }}
         dpr={[1, 2]}
         gl={{ antialias: true }}
         onCreated={({ scene }) => {
           scene.background = new THREE.Color(COLORS.bg);
-          scene.fog = new THREE.Fog(COLORS.bg, 150, 600);
+          // Far enough for fixed-wing swarms (hundreds of metres), still fades the horizon
+          scene.fog = new THREE.Fog(COLORS.bg, 4000, 20000);
         }}
       >
         <ambientLight intensity={0.55} />
@@ -327,6 +415,19 @@ export const Scene3D = () => {
           fadeDistance={260}
           fadeStrength={1.5}
           position={[0, 0.005, 0]}
+        />
+        {/* Coarse grid (50 m / 500 m) that stays visible when zoomed out on fixed-wing swarms */}
+        <Grid
+          infiniteGrid
+          cellSize={50}
+          sectionSize={500}
+          cellColor={COLORS.grid}
+          sectionColor={COLORS.gridMajor}
+          cellThickness={0.5}
+          sectionThickness={1}
+          fadeDistance={6000}
+          fadeStrength={2}
+          position={[0, 0.004, 0]}
         />
         <HomeMarker />
         <AxisLabels />

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { useStore, isLinkLost } from '../store';
-import { modeName, LANDED_STATE } from '../lib/px4';
+import { useShallow } from 'zustand/react/shallow';
+import { useStore, isLinkLost, liveCompanion } from '../store';
+import { modeName, LANDED_STATE, VTOL_STATE, isVtol } from '../lib/px4';
 import { vehicleRoles, swarmColor } from '../lib/theme';
 import { sendCommand } from '../lib/commands';
 import { AttitudeIndicator, Compass, BatteryBar } from './Instruments';
@@ -8,7 +9,7 @@ import { useNow } from './useNow';
 
 const speed = (v) => Math.hypot(v.vx, v.vy);
 
-const VehicleRow = ({ v, selected, role, now }) => {
+const VehicleRow = ({ v, selected, role, now, companion }) => {
   const select = useStore((s) => s.select);
   const lost = isLinkLost(v, now);
   return (
@@ -24,7 +25,10 @@ const VehicleRow = ({ v, selected, role, now }) => {
       </span>
       <span className="vehicle-mode">
         <span className={`chip ${v.armed ? 'chip-armed' : ''}`}>{v.armed ? 'ARMED' : 'DISARMED'}</span>
-        <span className="chip chip-mode">{modeName(v.mainMode, v.subMode)}</span>
+        <span className="chip chip-mode">
+          {isVtol(v) && <span className="vtol-state">{VTOL_STATE[v.vtolState]} · </span>}
+          {modeName(v.mainMode, v.subMode, companion)}
+        </span>
       </span>
       <span className="vehicle-metrics mono">
         <span>{lost ? <span className="danger">NO LINK</span> : `${(-v.z).toFixed(1)} m`}</span>
@@ -113,7 +117,52 @@ const VehicleDetail = ({ v, now }) => (
   </div>
 );
 
+// Takeoff + transition to fixed-wing for the selected VTOLs, each on its own altitude layer:
+// in Hold a fixed-wing loiters around its own point, so VTOLs at one altitude would collide.
+const VtolTakeoff = ({ ids }) => {
+  const vtolIds = useStore(useShallow((s) => ids.filter((id) => isVtol(s.vehicles[id]))));
+  const [altitude, setAltitude] = useState(40);
+  const [step, setStep] = useState(15);
+  const [distance, setDistance] = useState(300);
+  const layers = vtolIds.map((id, i) => `UAV ${id} → ${Number(altitude) + i * Number(step)} m`).join(', ');
+
+  const takeoff = () => {
+    vtolIds.forEach((id, i) =>
+      sendCommand([id], 'vtol_takeoff', { altitude: Number(altitude) + i * Number(step), loiter_distance: Number(distance) }));
+  };
+
+  return (
+    <div className="vtol-takeoff">
+      <div className="field-label">VTOL takeoff</div>
+      <div className="field-row">
+        <label className="field">
+          <span className="hint">Altitude (m)</span>
+          <input className="input mono" type="number" min="20" step="5" value={altitude} onChange={(e) => setAltitude(e.target.value)} />
+        </label>
+        <label className="field">
+          <span className="hint">Step per VTOL (m)</span>
+          <input className="input mono" type="number" min="0" step="5" value={step} onChange={(e) => setStep(e.target.value)} />
+        </label>
+        <label className="field">
+          <span className="hint">Loiter ahead (m)</span>
+          <input className="input mono" type="number" min="100" step="50" value={distance} onChange={(e) => setDistance(e.target.value)} />
+        </label>
+      </div>
+      <button className="btn btn-primary btn-block" onClick={takeoff} disabled={!vtolIds.length}>
+        Takeoff &amp; transition to FW
+      </button>
+      <p className="hint">
+        Climbs vertically, transitions along each VTOL's heading and loiters ahead. {layers}.
+        {vtolIds.length > 1 && Number(step) < 10 && <span className="danger"> Use at least 10 m between layers.</span>}
+      </p>
+    </div>
+  );
+};
+
 const CommandPanel = ({ ids }) => {
+  const vtol = useStore((s) => ids.some((id) => isVtol(s.vehicles[id])));
+  // VTOLs need the ROS 2 external mode: PX4's internal Swarm mode does not run in fixed-wing
+  const rosSwarm = useStore((s) => vtol && ids.every((id) => liveCompanion(s.companions, id)));
   const [alt, setAlt] = useState(10);
   const [killArm, setKillArm] = useState(false);
   const setPendingGoto = useStore((s) => s.setPendingGoto);
@@ -130,9 +179,22 @@ const CommandPanel = ({ ids }) => {
         <button className="btn" onClick={cmd('land')}>Land</button>
         <button className="btn" onClick={cmd('rtl')}>Return</button>
         <button className="btn" onClick={cmd('position')}>Position</button>
-        <button className="btn btn-swarm" onClick={cmd('swarm')}>Swarm mode</button>
+        <button
+          className="btn btn-swarm"
+          onClick={cmd('swarm', rosSwarm ? { external: true } : undefined)}
+          title={rosSwarm ? 'ROS 2 external Swarm mode (flies fixed-wing too)' : 'PX4 internal Swarm mode (multicopter only)'}
+        >
+          {rosSwarm ? 'Swarm (ROS 2)' : 'Swarm mode'}
+        </button>
         <button className="btn" onClick={() => requestFocus(ids)}>Center view</button>
+        {vtol && (
+          <>
+            <button className="btn" onClick={cmd('transition_fw')} title="MAV_CMD_DO_VTOL_TRANSITION to fixed-wing">To FW</button>
+            <button className="btn" onClick={cmd('transition_mc')} title="MAV_CMD_DO_VTOL_TRANSITION to multicopter">To MC</button>
+          </>
+        )}
       </div>
+      {vtol && <VtolTakeoff ids={ids} />}
       <div className="inline-form">
         <button className="btn btn-grow" onClick={() => setPendingGoto({ ids })}>Go to… (pick on map)</button>
       </div>
@@ -166,6 +228,7 @@ export const FleetPanel = () => {
   const swarms = useStore((s) => s.swarms);
   const select = useStore((s) => s.select);
   const selectedSwarm = useStore((s) => s.selectedSwarm);
+  const companions = useStore((s) => s.companions);
   const now = useNow(500);
   const swarmList = Object.values(swarms).sort((a, b) => a.id - b.id);
   const list = Object.values(vehicles).sort((a, b) => a.id - b.id);
@@ -193,7 +256,7 @@ export const FleetPanel = () => {
         </div>
         <div className="vehicle-list">
           {list.map((v) => (
-            <VehicleRow key={v.id} v={v} selected={selected.includes(v.id)} role={roles[v.id]} now={now} />
+            <VehicleRow key={v.id} v={v} selected={selected.includes(v.id)} role={roles[v.id]} now={now} companion={liveCompanion(companions, v.id, now)} />
           ))}
         </div>
         <p className="hint">Click to select, click again to deselect · Ctrl/Shift-click to multi-select · Shift-drag on the 2D map to box-select · double-click to follow</p>
@@ -219,7 +282,7 @@ export const FleetPanel = () => {
         <section className="section">
           <div className="section-head">
             <h3>{single ? `UAV ${single.id}` : `${selected.length} vehicles selected`}</h3>
-            {single && <span className="chip chip-mode">{modeName(single.mainMode, single.subMode)}</span>}
+            {single && <span className="chip chip-mode">{modeName(single.mainMode, single.subMode, liveCompanion(companions, single.id, now))}</span>}
           </div>
           {single && <VehicleDetail v={single} now={now} />}
           <CommandPanel ids={selected} />

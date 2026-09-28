@@ -8,9 +8,10 @@ Tested with PX4 v1.18.0
 
 
 
-![3d view](docs/img/gcs_3d_view.gif)
-![formation](docs/img/gcs_change_formation.gif)
-![flying](docs/img/gcs_fly_here.gif)
+![Overview](docs/img/gcs_3d_view.gif)
+![Overview](docs/img/gcs_change_formation.gif)
+![Overview](docs/img/gcs_deploy_swarm.gif)
+![Overview](docs/img/gcs_fly_here.gif)
 
 
 A custom flight mode was developed to simulate UAV swarms using a consensus leader-follower control architecture. Collision avoidance is handled via artificial potential fields (APF). A custom GCS allows operators to dynamically form swarm sub-groups and assign designated leaders.
@@ -85,6 +86,8 @@ MAVLINK_MODE_SWARM is defined to include ATTITUDE and LOCAL_POSITION_NED message
 ./run_swarm_sim.sh 25               # 25 drones (or -n 25, or SWARM_DRONES=25)
 ./run_swarm_sim.sh -n 5 -s 3        # 5 drones, 3 m apart
 ./run_swarm_sim.sh --gui            # also open the Gazebo GUI (heavy)
+./run_swarm_sim.sh --ros2           # also run the Swarm mode as a ROS 2 external mode (PX4 unchanged)
+./run_vtol_sim.sh                   # 3 standard VTOLs + ROS 2 Swarm mode (same as run_swarm_sim.sh 3 --vtol --ros2)
 ./run_swarm_sim.sh --build          # rebuild images first (after changing files under PX4/)
 ./run_swarm_sim.sh status           # what is running
 ./run_swarm_sim.sh logs 3           # follow PX4 instance 3's log

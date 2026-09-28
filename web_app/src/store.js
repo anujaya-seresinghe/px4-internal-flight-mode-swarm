@@ -26,6 +26,7 @@ export const useStore = create((set, get) => ({
   vehicles: {},
   selected: [],
   selectedSwarm: null, // a swarm selected as a unit (commands go to its leader)
+  companions: {}, // sys_id -> { customMode, active, lastSeen } of the ROS 2 Swarm mode nodes
   swarms: {},
   logs: [],
   view: saved.view || 'split',
@@ -79,7 +80,7 @@ export const useStore = create((set, get) => ({
 
   resetVehicles: () => {
     pending.clear();
-    set({ vehicles: {}, selected: [], selectedSwarm: null, follow: null });
+    set({ vehicles: {}, companions: {}, selected: [], selectedSwarm: null, follow: null });
   },
 }));
 
@@ -143,3 +144,9 @@ setInterval(() => {
 }, FLUSH_MS);
 
 export const isLinkLost = (v, now = Date.now()) => now - v.lastSeen > LINK_TIMEOUT_MS;
+
+/** ROS 2 Swarm mode node of a vehicle, if it is alive */
+export const liveCompanion = (companions, id, now = Date.now()) => {
+  const c = companions[id];
+  return c && c.customMode && now - c.lastSeen <= LINK_TIMEOUT_MS ? c : null;
+};

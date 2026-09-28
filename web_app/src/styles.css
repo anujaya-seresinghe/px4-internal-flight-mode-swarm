@@ -910,6 +910,20 @@ input[type='range'] {
   gap: 8px;
 }
 
+.vtol-takeoff {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.vtol-takeoff .field-row {
+  gap: 6px;
+}
+
 .btn-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

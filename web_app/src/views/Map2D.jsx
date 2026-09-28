@@ -4,7 +4,8 @@ import { COLORS, vehicleRoles, formationTargets } from '../lib/theme';
 import { sendCommand } from '../lib/commands';
 import { VehicleContextMenu } from './VehicleContextMenu';
 
-const MIN_SCALE = 0.5;
+// px per metre: 0.01 shows ~80 km on a typical map, enough for fixed-wing swarms
+const MIN_SCALE = 0.01;
 const MAX_SCALE = 200;
 const HIT_RADIUS = 16;
 

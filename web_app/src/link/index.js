@@ -7,9 +7,11 @@ const MAV_CMD_NAMES = {
   20: 'RTL',
   21: 'LAND',
   22: 'TAKEOFF',
+  84: 'VTOL TAKEOFF',
   176: 'SET_MODE',
   192: 'REPOSITION',
   400: 'ARM/DISARM',
+  3000: 'VTOL TRANSITION',
 };
 
 const TELEMETRY_TOPICS = [
@@ -21,6 +23,7 @@ const TELEMETRY_TOPICS = [
   'uav/extended_sys_state',
   'uav/command_ack',
   'uav/statustext',
+  'uav/companion',
 ];
 
 let transport = null; // { publish(topic, payload), close() }
@@ -57,12 +60,22 @@ const handleMessage = (topic, payload) => {
       });
       break;
     case 'uav/extended_sys_state':
-      ingest(id, { landedState: payload.landed_state });
+      ingest(id, { landedState: payload.landed_state, vtolState: payload.vtol_state ?? 0 });
       break;
     case 'uav/command_ack': {
       const name = MAV_CMD_NAMES[payload.command] || `CMD ${payload.command}`;
       const result = COMMAND_RESULT[payload.result] ?? payload.result;
       log(payload.result === 0 ? 'success' : payload.result === 5 ? 'info' : 'error', `${name}: ${result}`, `uav${id}`);
+      break;
+    }
+    case 'uav/companion': {
+      // ROS 2 Swarm mode node of this vehicle: which custom_mode selects the external mode
+      const { companions } = useStore.getState();
+      const known = companions[id];
+      useStore.setState({
+        companions: { ...companions, [id]: { customMode: payload.custom_mode >>> 0, active: !!payload.active, lastSeen: Date.now() } },
+      });
+      if (!known) log('info', 'ROS 2 Swarm mode node online', `uav${id}`);
       break;
     }
     case 'uav/statustext':

@@ -1,0 +1,58 @@
+# ROS 2 Humble companion for the external "Swarm" flight mode:
+# Micro XRCE-DDS Agent + px4_msgs + px4_ros2_interface_lib + ros2/swarm_mode.
+#
+# px4_msgs is generated from the message definitions of the PX4 image this repo builds
+# (docker-compose-px4.yaml), so the mode's message compatibility check matches exactly.
+ARG PX4_IMAGE=px4-internal-flight-mode-swarm-px4_sitl
+FROM ${PX4_IMAGE} AS px4
+
+FROM ros:humble-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git build-essential cmake python3-colcon-common-extensions \
+        ros-humble-eigen3-cmake-module libeigen3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Micro XRCE-DDS Agent (PX4's uxrce_dds_client talks to it on UDP 8888)
+ARG XRCE_AGENT_REF=v2.4.3
+RUN git clone -b ${XRCE_AGENT_REF} --depth 1 https://github.com/eProsima/Micro-XRCE-DDS-Agent.git /tmp/agent \
+    && cmake -S /tmp/agent -B /tmp/agent/build \
+    && cmake --build /tmp/agent/build -j"$(nproc)" \
+    && cmake --install /tmp/agent/build \
+    && ldconfig && rm -rf /tmp/agent
+
+WORKDIR /ws
+
+# px4_msgs with this PX4 build's messages
+RUN git clone --depth 1 https://github.com/PX4/px4_msgs.git src/px4_msgs \
+    && rm -f src/px4_msgs/msg/*.msg src/px4_msgs/srv/*.srv
+COPY --from=px4 /app/PX4-Autopilot/msg /tmp/px4/msg
+COPY --from=px4 /app/PX4-Autopilot/srv /tmp/px4/srv
+RUN cp /tmp/px4/msg/*.msg /tmp/px4/msg/versioned/*.msg src/px4_msgs/msg/ \
+    && cp /tmp/px4/srv/*.srv src/px4_msgs/srv/ \
+    && rm -rf /tmp/px4
+
+# PX4 ROS 2 Interface Library, pinned to a commit matching this PX4 version.
+# Patch: a setpoint type PX4 rejects for the *current* vehicle type (fixed-wing setpoints on a
+# VTOL registering in multicopter phase) is a warning instead of a fatal registration error.
+ARG PX4_ROS2_LIB_REF=ac2e8ae
+COPY ros2/patches /tmp/patches
+RUN git clone https://github.com/Auterion/px4-ros2-interface-lib.git src/px4-ros2-interface-lib \
+    && git -C src/px4-ros2-interface-lib checkout ${PX4_ROS2_LIB_REF} \
+    && git -C src/px4-ros2-interface-lib apply /tmp/patches/px4_ros2_optional_setpoint_types.patch
+
+RUN . /opt/ros/humble/setup.sh \
+    && colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+       --packages-up-to px4_ros2_cpp --event-handlers console_direct- \
+    && rm -rf build log
+
+# Swarm mode node (needs the repo's MAVLink headers with the swarm messages)
+COPY libraries/mavlink /ws/libraries/mavlink
+COPY ros2/swarm_mode /ws/src/swarm_mode
+RUN . /opt/ros/humble/setup.sh && . /ws/install/setup.sh \
+    && colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release --packages-select swarm_mode
+
+COPY ros2/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]

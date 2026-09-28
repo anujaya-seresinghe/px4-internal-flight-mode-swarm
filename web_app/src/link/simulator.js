@@ -16,8 +16,10 @@ const MODE = {
   RTL: [4, 5],
   LAND: [4, 6],
   SWARM: [4, 11],
+  SWARM_EXT: [4, 12], // ROS 2 external Swarm mode (EXTERNAL1 in this repo's PX4)
 };
 
+const inSwarmMode = (v) => v.mode === MODE.SWARM || v.mode === MODE.SWARM_EXT;
 const clamp = (v, lim) => Math.max(-lim, Math.min(lim, v));
 const wrapPi = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
@@ -49,7 +51,7 @@ export const createSimulator = (emit) => {
   const setMode = (v, mode) => {
     v.mode = mode;
     if (mode === MODE.HOLD || mode === MODE.POSITION) v.target = [...v.pos];
-    if (mode === MODE.SWARM) resetSwarm(v);
+    if (mode === MODE.SWARM || mode === MODE.SWARM_EXT) resetSwarm(v);
   };
 
   const resetSwarm = (v) => {
@@ -103,7 +105,7 @@ export const createSimulator = (emit) => {
           text(v, 4, 'Swarm mode requires the vehicle to be flying');
           return ack(v, 176, 2);
         }
-        setMode(v, MODE.SWARM);
+        setMode(v, params.external ? MODE.SWARM_EXT : MODE.SWARM);
         return ack(v, 176, 0);
       case 'goto': {
         if (v.landed) return ack(v, 192, 2);
@@ -132,7 +134,7 @@ export const createSimulator = (emit) => {
 
   const handleSwarmManagement = (m) => {
     vehicles.forEach((v) => {
-      if (v.mode !== MODE.SWARM || !addressed(m, v)) return;
+      if (!inSwarmMode(v) || !addressed(m, v)) return;
       // type 2: same swarm, new offsets. Keep the current formation until all of them arrived
       if (m.type === 2 && v.swarm.id !== 0 && v.swarm.id === m.swarm_id) {
         v.swarm.pending = { expected: m.no_of_nodes, leader: m.leader_id, list: [] };
@@ -152,7 +154,7 @@ export const createSimulator = (emit) => {
 
   const handleSwarmNode = (m) => {
     vehicles.forEach((v) => {
-      if (v.mode !== MODE.SWARM || !addressed(m, v)) return;
+      if (!inSwarmMode(v) || !addressed(m, v)) return;
       const s = v.swarm;
       if (s.pending) {
         if (m.swarm_id !== s.id) return;
@@ -183,7 +185,7 @@ export const createSimulator = (emit) => {
       const [mMain, mSub] = v.mode;
 
       if (v.armed && !v.landed) {
-        if (mMain === 4 && mSub === 11) {
+        if (mMain === 4 && (mSub === 11 || mSub === 12)) {
           const s = v.swarm;
           if (s.consensus.length && s.list.length === s.nodes) {
             const leader = byId(s.leader);
@@ -222,7 +224,7 @@ export const createSimulator = (emit) => {
           cmd[1] *= V_MAX / h;
         }
         cmd[2] = clamp(cmd[2], 3);
-        if (h > 1.5 && !(mMain === 4 && mSub === 11)) v.targetYaw = Math.atan2(cmd[1], cmd[0]);
+        if (h > 1.5 && !(mMain === 4 && (mSub === 11 || mSub === 12))) v.targetYaw = Math.atan2(cmd[1], cmd[0]);
       } else if (!v.landed) {
         cmd = [v.vel[0] * 0.98, v.vel[1] * 0.98, 9]; // unpowered descent
       }
@@ -291,6 +293,8 @@ export const createSimulator = (emit) => {
         emit('uav/sys_status', {
           sys_id: v.id, voltage: 14.8 + (v.battery / 100) * 2, battery_remaining: Math.round(v.battery),
         });
+        // stand-in for the ROS 2 swarm_mode node's heartbeat (custom_mode of EXTERNAL1)
+        emit('uav/companion', { sys_id: v.id, custom_mode: ((MODE.SWARM_EXT[1] << 24) | (MODE.SWARM_EXT[0] << 16)) >>> 0, active: v.mode === MODE.SWARM_EXT });
         emit('uav/extended_sys_state', {
           sys_id: v.id, landed_state: v.landed ? 1 : v.mode === MODE.LAND ? 4 : v.mode === MODE.TAKEOFF ? 3 : 2,
         });

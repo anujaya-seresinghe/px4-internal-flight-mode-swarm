@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>swarm_mode</name>
+  <version>0.1.0</version>
+  <description>PX4 external flight mode "Swarm": consensus leader-follower swarm control over ROS 2, configured with the SWARM_MANAGEMENT / SWARM_NODE MAVLink messages</description>
+  <maintainer email="anujaya95@gmail.com">anujaya</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>eigen3_cmake_module</buildtool_depend>
+
+  <depend>eigen</depend>
+  <depend>rclcpp</depend>
+  <depend>px4_msgs</depend>
+  <depend>px4_ros2_cpp</depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

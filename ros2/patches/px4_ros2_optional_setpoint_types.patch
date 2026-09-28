@@ -1,0 +1,23 @@
+diff --git a/px4_ros2_cpp/src/components/mode.cpp b/px4_ros2_cpp/src/components/mode.cpp
+index 55a45f6..4d80f63 100644
+--- a/px4_ros2_cpp/src/components/mode.cpp
++++ b/px4_ros2_cpp/src/components/mode.cpp
+@@ -243,9 +243,15 @@ void ModeBase::checkSetpointCompatibilityAndRequirements()
+                 // could fall back to another type (to e.g. support multiple vehicle types).
+                 switch (reply.result) {
+                   case px4_msgs::msg::SetpointConfigReply::RESULT_UNSUPPORTED:
+-                    throw Exception("Setpoint type " + std::to_string(setpoint_config.type) +
+-                                    " with index " + std::to_string(setpoint_index) +
+-                                    " is not supported by the current vehicle type");
++                    // Optional setpoint type: PX4 checks against the *current* vehicle type,
++                    // so a VTOL registering in multicopter phase rejects fixed-wing setpoints
++                    // that become valid after the transition. PX4 re-checks when the type is
++                    // applied, so only warn here (no mode requirements from this type).
++                    RCLCPP_WARN(node().get_logger(),
++                                "Setpoint type %d (index %u) is not supported by the current "
++                                "vehicle type; it can only be used once the vehicle type allows it",
++                                setpoint_config.type, setpoint_index);
++                    break;
+                   case px4_msgs::msg::SetpointConfigReply::RESULT_UNKNOWN_SETPOINT_TYPE:
+                     throw Exception("Setpoint type " + std::to_string(setpoint_config.type) +
+                                     " with index " + std::to_string(setpoint_index) +

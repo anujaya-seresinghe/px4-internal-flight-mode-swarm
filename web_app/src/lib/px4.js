@@ -31,12 +31,19 @@ export const decodeCustomMode = (customMode) => {
   return { main, sub };
 };
 
-export const modeName = (main, sub) => {
+// PX4_CUSTOM_SUB_MODE_EXTERNAL1 in this repo's PX4 build (SWARM was inserted before it)
+export const EXTERNAL1_SUB_MODE = 12;
+
+export const modeName = (main, sub, companion) => {
+  if (main === 4 && companion && ((companion.customMode >>> 24) & 0xff) === sub) return 'Swarm (ROS 2)';
+  if (main === 4 && sub >= EXTERNAL1_SUB_MODE && sub < EXTERNAL1_SUB_MODE + 8) return `External ${sub - EXTERNAL1_SUB_MODE + 1}`;
   if (main === 4) return AUTO_SUB_MODES[sub] || `Auto ${sub}`;
   return MAIN_MODES[main] || (main ? `Mode ${main}` : '—');
 };
 
-export const isSwarmMode = (v) => v?.mainMode === 4 && v?.subMode === 11;
+/** Internal PX4 swarm mode, or the ROS 2 external Swarm mode advertised by the vehicle's companion */
+export const isSwarmMode = (v, companion) =>
+  v?.mainMode === 4 && (v?.subMode === 11 || (!!companion && ((companion.customMode >>> 24) & 0xff) === v.subMode));
 
 // MAV_STATE
 export const SYSTEM_STATUS = {
@@ -59,6 +66,10 @@ export const LANDED_STATE = {
   3: 'Taking off',
   4: 'Landing',
 };
+
+// MAV_VTOL_STATE (0 = not a VTOL)
+export const VTOL_STATE = { 1: '→ FW', 2: '→ MC', 3: 'MC', 4: 'FW' };
+export const isVtol = (v) => (v?.vtolState ?? 0) > 0;
 
 // MAV_RESULT
 export const COMMAND_RESULT = {
@@ -86,4 +97,7 @@ export const VEHICLE_COMMANDS = {
   swarm: 'Swarm mode',
   goto: 'Go to',
   kill: 'Kill',
+  vtol_takeoff: 'VTOL takeoff + transition',
+  transition_fw: 'Transition to fixed-wing',
+  transition_mc: 'Transition to multicopter',
 };

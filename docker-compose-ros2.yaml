@@ -1,0 +1,15 @@
+name: px4-swarm-ros2
+
+services:
+  swarm_mode:
+    build:
+      context: .
+      dockerfile: DockerfileROS2
+    container_name: swarm_ros2
+    network_mode: host
+    ipc: host
+    environment:
+      - SWARM_DRONES=${SWARM_DRONES:-5}
+      - EXTERNAL1_SUB_MODE=${EXTERNAL1_SUB_MODE:-12}
+      - ROS_DOMAIN_ID=0
+    restart: unless-stopped

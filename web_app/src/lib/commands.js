@@ -23,15 +23,16 @@ export const sendCommand = (ids, command, params) => {
  * 3. one SWARM_NODE per member, spaced out because the uORB topics have a queue of 1
  * Messages are addressed to the members only, so other swarms are left alone.
  */
-export const deploySwarm = async ({ swarmId, leaderId, members, offsets, onStep }) => {
+export const deploySwarm = async ({ swarmId, leaderId, members, offsets, external = false, onStep }) => {
   const { log, upsertSwarm } = useStore.getState();
   const step = (i) => onStep?.(i);
 
-  upsertSwarm({ id: swarmId, leaderId, members, offsets, status: 'deploying', createdAt: Date.now() });
-  log('cmd', `Deploying swarm ${swarmId} — leader UAV ${leaderId}, ${members.length} nodes`);
+  upsertSwarm({ id: swarmId, leaderId, members, offsets, external, status: 'deploying', createdAt: Date.now() });
+  log('cmd', `Deploying swarm ${swarmId} — leader UAV ${leaderId}, ${members.length} nodes, ${external ? 'ROS 2 external' : 'PX4 internal'} mode`);
 
   step(0);
-  if (!sendCommand(members, 'swarm')) {
+  // external: the bridge selects the ROS 2 Swarm mode using the custom_mode its node advertises
+  if (!sendCommand(members, 'swarm', external ? { external: true } : undefined)) {
     upsertSwarm({ id: swarmId, status: 'failed' });
     return false;
   }

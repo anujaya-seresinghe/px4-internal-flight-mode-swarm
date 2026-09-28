@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useStore, isLinkLost } from '../store';
+import { useStore, isLinkLost, liveCompanion } from '../store';
 import { FORMATIONS, buildFormation, tightPairs, APF_RADIUS } from '../lib/formations';
 import { swarmColor } from '../lib/theme';
-import { isSwarmMode } from '../lib/px4';
+import { isSwarmMode, isVtol } from '../lib/px4';
 import { deploySwarm, dissolveSwarm, nextSwarmId, sendCommand, updateFormation } from '../lib/commands';
 import { FormationEditor } from './FormationEditor';
 
@@ -16,7 +16,8 @@ const SwarmCard = ({ swarm, active, onOpen, onReform }) => {
   const setPendingGoto = useStore((s) => s.setPendingGoto);
   const [confirm, setConfirm] = useState(false);
   const color = swarmColor(swarm.id);
-  const inMode = swarm.members.filter((id) => id !== swarm.leaderId && isSwarmMode(vehicles[id])).length;
+  const companions = useStore((s) => s.companions);
+  const inMode = swarm.members.filter((id) => id !== swarm.leaderId && isSwarmMode(vehicles[id], liveCompanion(companions, id))).length;
   const followers = swarm.members.length - 1;
 
   return (
@@ -32,6 +33,7 @@ const SwarmCard = ({ swarm, active, onOpen, onReform }) => {
       <div className="swarm-card-head">
         <span className="swarm-dot" />
         <span className="swarm-name">Swarm {swarm.id}</span>
+        <span className="chip">{swarm.external ? 'ROS 2' : 'PX4'}</span>
         <span className={`chip ${swarm.status === 'active' ? 'chip-ok' : swarm.status === 'failed' ? 'chip-bad' : 'chip-info'}`}>
           {swarm.status}
         </span>
@@ -81,6 +83,8 @@ export const SwarmPanel = () => {
   const [custom, setCustom] = useState(null);
   const [step, setStep] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [external, setExternal] = useState(false); // run the swarm in the ROS 2 external mode
+  const companions = useStore((s) => s.companions);
 
   const list = Object.values(vehicles).sort((a, b) => a.id - b.id);
   const swarmList = Object.values(swarms).sort((a, b) => a.id - b.id);
@@ -99,6 +103,14 @@ export const SwarmPanel = () => {
     if (editing && !swarms[editing]) setEditing(null); // swarm dissolved while editing
     else if (!editing && swarms[swarmId] && step === null) setSwarmId(nextSwarmId());
   }, [swarms]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // VTOLs with a ROS 2 Swarm node default to the external mode (the only one that flies fixed-wing)
+  const vtolMembers = members.filter((id) => isVtol(vehicles[id]));
+  const vtolKey = vtolMembers.join(',');
+  useEffect(() => {
+    if (editing || !vtolMembers.length) return;
+    if (vtolMembers.every((id) => liveCompanion(companions, id))) setExternal(true);
+  }, [vtolKey, editing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const followers = members.filter((id) => id !== leaderId);
   const offsets = useMemo(() => {
@@ -160,7 +172,16 @@ export const SwarmPanel = () => {
   const lost = members.filter((id) => vehicles[id] && isLinkLost(vehicles[id]));
   const tight = tightPairs(offsets);
   const idTaken = swarms[swarmId] && swarmId !== editing;
-  const canDeploy = members.length >= 2 && leaderId !== null && step === null && !idTaken && swarmId >= 1 && swarmId <= 255;
+  // ROS 2 external mode needs a live Swarm mode node on every member
+  const noCompanion = members.filter((id) => !liveCompanion(companions, id));
+  // PX4's internal Swarm mode is a flight task, and PX4 runs no flight tasks in fixed-wing:
+  // followers in fixed-wing would just keep flying towards their last setpoint
+  const inFixedWing = members.filter((id) => vehicles[id]?.vtolState === 4);
+  const internalBlocked = !external && inFixedWing.length > 0;
+  const anyCompanion = Object.keys(companions).some((id) => liveCompanion(companions, Number(id)));
+  const canDeploy = members.length >= 2 && leaderId !== null && step === null && !idTaken && swarmId >= 1 && swarmId <= 255
+    && (!external || editing || noCompanion.length === 0)
+    && (editing || !internalBlocked);
 
   const cancelEdit = () => {
     setEditing(null);
@@ -185,7 +206,7 @@ export const SwarmPanel = () => {
       if (remaining.length < 2 || !remaining.includes(s.leaderId)) removeSwarm(s.id);
       else upsertSwarm({ id: s.id, members: remaining });
     });
-    await deploySwarm({ swarmId, leaderId, members, offsets, onStep: setStep });
+    await deploySwarm({ swarmId, leaderId, members, offsets, external, onStep: setStep });
     setTimeout(() => {
       setStep(null);
       setEditing(null);
@@ -249,6 +270,19 @@ export const SwarmPanel = () => {
               </div>
             </div>
 
+            {!editing && (
+              <div className="field">
+                <div className="field-label">Swarm flight mode</div>
+                <div className="segmented">
+                  <button className={!external ? 'active' : ''} onClick={() => setExternal(false)}>PX4 internal</button>
+                  <button className={external ? 'active' : ''} onClick={() => setExternal(true)} disabled={!anyCompanion && !external}
+                    title={anyCompanion ? 'ROS 2 external Swarm mode (swarm_mode node)' : 'No ROS 2 Swarm mode node is running'}>
+                    ROS 2 external
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="field">
               <div className="field-label">Formation</div>
               <div className="segmented wrap">
@@ -286,6 +320,22 @@ export const SwarmPanel = () => {
 
             <div className="warnings">
               {members.length < 2 && <div className="warn">A swarm needs at least two vehicles.</div>}
+              {external && (
+                <div className="hint">
+                  VTOLs in fixed-wing: the formation is relative to the leader's course (up = forward). Keep the side
+                  offsets under ~27 m if the leader loiters (80 m radius).
+                </div>
+              )}
+              {internalBlocked && !editing && (
+                <div className="warn bad">
+                  UAV {inFixedWing.join(', ')} {inFixedWing.length > 1 ? 'are' : 'is'} flying fixed-wing. PX4's internal Swarm mode
+                  cannot control fixed-wing flight (the followers would keep flying towards their last setpoint). Use ROS 2 external.
+                  <button className="link-btn" onClick={() => setExternal(true)}>Switch to ROS 2 external</button>
+                </div>
+              )}
+              {external && !editing && noCompanion.length > 0 && (
+                <div className="warn bad">No ROS 2 Swarm mode node for UAV {noCompanion.join(', ')}. Start it with ./run_swarm_sim.sh --ros2.</div>
+              )}
               {idTaken && (
                 <div className="warn">
                   Swarm {swarmId} already exists (leader UAV {swarms[swarmId].leaderId}). To change its shape, keep the ID and
