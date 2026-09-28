@@ -8,10 +8,9 @@ Tested with PX4 v1.18.0
 
 
 
-![Overview](docs/img/gcs_3d_view.gif)
-![Overview](docs/img/gcs_change_formation.gif)
-![Overview](docs/img/gcs_deploy_swarm.gif)
-![Overview](docs/img/gcs_fly_here.gif)
+![3d view](docs/img/gcs_3d_view.gif)
+![formation](docs/img/gcs_change_formation.gif)
+![flying](docs/img/gcs_fly_here.gif)
 
 
 A custom flight mode was developed to simulate UAV swarms using a consensus leader-follower control architecture. Collision avoidance is handled via artificial potential fields (APF). A custom GCS allows operators to dynamically form swarm sub-groups and assign designated leaders.
