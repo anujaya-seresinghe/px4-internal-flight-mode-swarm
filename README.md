@@ -134,6 +134,10 @@ For go-to, battery and status text, the telemetry link needs the extra streams a
 |---|---|---|
 | `uav/local_position_ned`, `uav/attitude`, `uav/heartbeat`, `uav/global_position`, `uav/sys_status`, `uav/extended_sys_state`, `uav/command_ack`, `uav/statustext` | bridge → GCS | MAVLink fields plus `sys_id` |
 | `uav/command` | GCS → bridge | `{"uav_ids": [1,2], "command": "arm\|disarm\|takeoff\|land\|hold\|rtl\|position\|swarm\|goto\|kill", "params": {"north", "east", "up", "altitude"}}` |
+| `uav/command` (parameters) | GCS → bridge | `"command": "set_param"` with `"params": {"name": "SWARM_WEIGHT", "value": 1.5}` (`PARAM_SET`, float parameters only) or `"get_param"` with `{"name"}` (`PARAM_REQUEST_READ`) |
+| `uav/param` | bridge → GCS | `{"sys_id", "name", "value"}` from the autopilot's `PARAM_VALUE` (answer to set/get) |
+| `uav/command` (swarm status) | GCS → bridge | `"command": "swarm_status"`: `MAV_CMD_REQUEST_MESSAGE` for `SWARM_STATUS` (603) to the autopilot and, if running, the vehicle's ROS 2 Swarm mode node |
+| `uav/swarm_status` | bridge → GCS | `{"sys_id", "source": "px4"\|"ros2", "state", "swarm_id", "leader_id", "no_of_nodes", "nodes": [{"id", "x", "y"}]}` |
 | `uav/swarm_management` | GCS → bridge | `{"type", "swarm_id", "no_of_nodes", "leader_id", "uav_ids"?}` |
 | `uav/swarm_node` | GCS → bridge | `{"swarm_id", "node_id", "x", "y", "uav_ids"?}` |
 | `uav/swarm_flight_mode` | GCS → bridge | `{"uav_ids": [...]}` (legacy, same as `command: "swarm"`) |

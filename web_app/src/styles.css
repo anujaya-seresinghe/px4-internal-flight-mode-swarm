@@ -1002,6 +1002,47 @@ input[type='range'] {
   font-size: 11.5px;
 }
 
+.swarm-weight-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.swarm-weight-item {
+  font-size: 11.5px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+}
+
+.swarm-weight-item.off {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.swarm-weight-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swarm-weight-row .field-label {
+  flex: 1;
+  margin: 0;
+}
+
+.swarm-weight-input.input {
+  width: 76px;
+  height: 28px;
+  padding: 0 6px;
+}
+
+.swarm-weight .hint,
+.swarm-weight .warn {
+  margin-top: 6px;
+}
+
 .member-picker {
   display: flex;
   flex-wrap: wrap;

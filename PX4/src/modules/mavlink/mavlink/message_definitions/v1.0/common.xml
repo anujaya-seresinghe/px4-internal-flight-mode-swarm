@@ -8322,6 +8322,18 @@
       <field type="float" name="y">y from the leader</field>
     </message>
 
+    <message id="603" name="SWARM_STATUS">
+      <description>Swarm membership of a vehicle, sent on request (MAV_CMD_REQUEST_MESSAGE param1 = 603) by the PX4 Swarm flight task (component 1) or the ROS 2 Swarm mode (MAV_COMP_ID_ONBOARD_COMPUTER). Followers know the whole formation, so one follower is enough to restore a swarm. The leader leaves the Swarm mode and reports state 0.</description>
+      <field type="uint8_t" name="state">0 = not in an active Swarm mode, 1 = in Swarm mode without a swarm, 2 = collecting SWARM_NODEs, 3 = flying the formation, 4 = formation update pending</field>
+      <field type="uint8_t" name="swarm_id">ID of the swarm network (0 = none)</field>
+      <field type="uint8_t" name="leader_id">ID of the swarm leader</field>
+      <field type="uint8_t" name="no_of_nodes">Number of nodes in the network</field>
+      <field type="uint8_t" name="node_count">Number of valid entries in node_ids, x and y</field>
+      <field type="uint8_t[20]" name="node_ids">IDs of the nodes of the current formation</field>
+      <field type="float[20]" name="x">x offset of each node (as sent in SWARM_NODE)</field>
+      <field type="float[20]" name="y">y offset of each node (as sent in SWARM_NODE)</field>
+    </message>
+
 
     <!-- The message ids 510 and 511 are reserved for ABSOLUTE_TARGET and RELATIVE_TARGET, currently in development.xml. -->
     <!-- Rover specific messages -->

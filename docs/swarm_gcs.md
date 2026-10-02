@@ -64,6 +64,10 @@ The telemetry link (`px4-rc.mavlink`) streams `ATTITUDE`, `LOCAL_POSITION_NED`, 
 |---|---|---|
 | `uav/local_position_ned`, `uav/attitude`, `uav/heartbeat`, `uav/global_position`, `uav/sys_status`, `uav/extended_sys_state`, `uav/command_ack`, `uav/statustext` | bridge → GCS | MAVLink fields plus `sys_id` |
 | `uav/command` | GCS → bridge | `{"uav_ids": [1,2], "command": "arm\|disarm\|takeoff\|land\|hold\|rtl\|position\|swarm\|goto\|kill", "params": {"north", "east", "up", "altitude"}}` |
+| `uav/command` (parameters) | GCS → bridge | `"command": "set_param"` with `"params": {"name": "SWARM_WEIGHT", "value": 1.5}` (`PARAM_SET`, float parameters only) or `"get_param"` with `{"name"}` (`PARAM_REQUEST_READ`) |
+| `uav/param` | bridge → GCS | `{"sys_id", "name", "value"}` from the autopilot's `PARAM_VALUE` (answer to set/get) |
+| `uav/command` (swarm status) | GCS → bridge | `"command": "swarm_status"`: `MAV_CMD_REQUEST_MESSAGE` for `SWARM_STATUS` (603) to the autopilot and, if running, the vehicle's ROS 2 Swarm mode node |
+| `uav/swarm_status` | bridge → GCS | `{"sys_id", "source": "px4"\|"ros2", "state", "swarm_id", "leader_id", "no_of_nodes", "nodes": [{"id", "x", "y"}]}` |
 | `uav/swarm_management` | GCS → bridge | `{"type", "swarm_id", "no_of_nodes", "leader_id", "uav_ids"?}`: `type` 1 = create, 2 = update formation |
 | `uav/swarm_node` | GCS → bridge | `{"swarm_id", "node_id", "x", "y", "uav_ids"?}` |
 | `uav/swarm_flight_mode` | GCS → bridge | `{"uav_ids": [...]}` (legacy, same as `command: "swarm"`) |
@@ -113,7 +117,14 @@ Click **Change formation** on the swarm card (or enter the existing swarm's ID i
 
 No flight modes change. Each follower keeps flying the current formation while the new offsets arrive, and switches to all of them at once when the last one is in, so followers never fly a mix of old and new slots. If a `SWARM_NODE` is lost the follower simply stays in the old formation; click Update again (re-sent offsets overwrite the pending ones).
 
-The GCS only knows swarms deployed from it; they are not restored after a page reload.
+### Restoring swarms after a reload
+
+The GCS keeps no swarm state of its own. When it discovers a vehicle (page load, reconnect) it asks it for `SWARM_STATUS` (MAVLink 603) with `MAV_CMD_REQUEST_MESSAGE`. Both the PX4 Swarm task (component 1) and the ROS 2 Swarm mode node (component 191, also asked when it comes online) answer with their state and the **complete formation** they fly (swarm ID, leader, number of nodes, every node's offset). The leader has left the Swarm mode and reports nothing, but any one follower is enough: the GCS rebuilds the swarm card (marked **restored**, with PX4 or ROS 2 from whichever answered), and Change formation, Move leader and Dissolve work on it as usual. **Read from vehicles** in the Active swarms header asks again.
+
+`SWARM_STATUS.state`: 0 = not in a Swarm mode, 1 = in the mode without a swarm, 2 = waiting for `SWARM_NODE`s, 3 = flying the formation, 4 = formation update pending. Up to 20 nodes per swarm fit in one message.
+
+### Params tab
+**Consensus weight** (`SWARM_WEIGHT`): the weight `FlightTaskSwarm` applies to every edge of the swarm graph (`velocity = -SWARM_WEIGHT · Σ formation errors`, default 1, range 0.01–10). The graph is undirected, so edge i–j must carry the same weight from both ends: the weight is one fleet-wide value and is always set on **all** UAVs at once (`PARAM_SET` to every vehicle). The tab lists the value each UAV reports back (`PARAM_VALUE`). A UAV that differs or hasn't reported is shown in red, and the tab gets a red **!**; press **Sync all** to fix it. Higher weights converge faster but can oscillate. Changes apply immediately, also in flight, and persist per vehicle like any PX4 parameter. The GCS reads the value from every vehicle when it is discovered. The ROS 2 external mode does not use it (fixed weight 1).
 
 ### Log tab
 Command acknowledgements, `STATUSTEXT` from the drones and GCS events, with level filters.
@@ -221,7 +232,11 @@ With `fw_rotate_offsets:=false` (fixed north/east offsets, like the internal mod
 - **Follower yaw** (`mavlink_receiver.cpp`, `SwarmInformation.msg`, `FlightTaskSwarm.cpp`): position and attitude messages from neighbours each filled only half of an uninitialised `swarm_information`. So position messages carried a random yaw that overwrote the followers' reference yaw. Unused fields are now NaN, the topic has a queue of 32, and the task reads every queued message.
 - **Extra telemetry streams** on the bridge link (`px4-rc.mavlink`) for go-to, battery and status text.
 
-Both need a PX4 rebuild (`./run_swarm_sim.sh --build`).
+- **`SWARM_WEIGHT` parameter** (`tasks/Swarm/flight_task_swarm_params.yaml`, `FlightTaskSwarm`): the consensus weight of every neighbour, previously hard-coded to 1. Read live, so a change from the GCS or QGC applies while the mode is active.
+
+- **`SWARM_STATUS` (MAVLink 603)** (`common.xml`, `msg/SwarmStatus.msg`, `FlightTaskSwarm`, `mavlink/streams/SWARM_STATUS.hpp`, `mavlink_messages.cpp`): the task publishes its swarm membership on uORB `swarm_status` at 2 Hz. The MAVLink stream sends it only when requested (`MAV_CMD_REQUEST_MESSAGE` 603), and outside the Swarm mode it answers with state 0. The ROS 2 node answers the same request itself. `libraries/mavlink` has the generated header (bridge, ROS 2 node).
+
+All of these need a PX4 rebuild (`./run_swarm_sim.sh --build`).
 
 ## Troubleshooting
 

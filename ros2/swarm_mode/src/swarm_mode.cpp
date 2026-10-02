@@ -75,6 +75,18 @@ void SwarmMode::pollMavlink()
 
 void SwarmMode::handleMessage(const mavlink_message_t & msg)
 {
+  // A GCS restoring its swarms asks every vehicle for SWARM_STATUS, also while the mode is off
+  if (msg.msgid == MAVLINK_MSG_ID_COMMAND_LONG) {
+    mavlink_command_long_t cmd;
+    mavlink_msg_command_long_decode(&msg, &cmd);
+    if (cmd.command == kMavCmdRequestMessage && std::lround(cmd.param1) == MAVLINK_MSG_ID_SWARM_STATUS &&
+      cmd.target_system == _config.sys_id && cmd.target_component == MAV_COMP_ID_ONBOARD_COMPUTER)
+    {
+      sendSwarmStatus();
+    }
+    return;
+  }
+
   // Like the uORB subscriptions of the internal task: only listen while the mode runs
   if (!_active) {
     return;
@@ -205,6 +217,41 @@ void SwarmMode::sendHeartbeat()
   mavlink_msg_heartbeat_pack(_config.sys_id, MAV_COMP_ID_ONBOARD_COMPUTER, &msg,
     MAV_TYPE_ONBOARD_CONTROLLER, MAV_AUTOPILOT_INVALID,
     _active ? MAV_MODE_FLAG_CUSTOM_MODE_ENABLED : 0, customMode(), MAV_STATE_ACTIVE);
+  _link->sendToPeer(msg);
+}
+
+// Swarm membership (the complete formation), like FlightTaskSwarm's SWARM_STATUS
+void SwarmMode::sendSwarmStatus()
+{
+  mavlink_swarm_status_t status{};
+  SwarmState state = SwarmState::None;
+  if (_active) {
+    if (_updating_formation) {
+      state = SwarmState::Updating;
+    } else if (_swarm_id == 0) {
+      state = SwarmState::Idle;
+    } else {
+      state = _nodes.size() == _no_of_nodes ? SwarmState::Active : SwarmState::Collecting;
+    }
+  }
+  status.state = static_cast<uint8_t>(state);
+  if (state != SwarmState::None) {
+    status.swarm_id = _swarm_id;
+    status.leader_id = _leader_id;
+    status.no_of_nodes = _no_of_nodes;
+    constexpr size_t kMaxNodes = sizeof(status.node_ids) / sizeof(status.node_ids[0]);
+    for (const auto & [id, node] : _nodes) {
+      if (status.node_count >= kMaxNodes) {
+        break;
+      }
+      status.node_ids[status.node_count] = id;
+      status.x[status.node_count] = node.x;
+      status.y[status.node_count] = node.y;
+      status.node_count++;
+    }
+  }
+  mavlink_message_t msg;
+  mavlink_msg_swarm_status_encode(_config.sys_id, MAV_COMP_ID_ONBOARD_COMPUTER, &msg, &status);
   _link->sendToPeer(msg);
 }
 

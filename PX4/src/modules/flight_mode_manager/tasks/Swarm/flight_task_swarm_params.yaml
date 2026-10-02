@@ -1,0 +1,18 @@
+module_name: Swarm
+parameters:
+- group: Flight Task Swarm
+  definitions:
+    SWARM_WEIGHT:
+      description:
+        short: Consensus weight of the swarm neighbours
+        long: |
+          Weight applied to every neighbour in the consensus law of the Swarm flight mode
+          (velocity = -SWARM_WEIGHT * sum of the formation errors to all neighbours).
+          Higher values converge faster but can oscillate; lower values are smoother.
+          Takes effect immediately, also while the Swarm mode is active.
+      type: float
+      default: 1.0
+      min: 0.01
+      max: 10.0
+      increment: 0.05
+      decimal: 2

@@ -65,6 +65,10 @@ public:
 private:
   // SwarmManagement.msg TYPE_*
   static constexpr uint8_t kTypeUpdateFormation = 2;
+  // The bundled MAVLink headers omit the MAV_CMD enum
+  static constexpr uint16_t kMavCmdRequestMessage = 512;
+  // SWARM_STATUS.state
+  enum class SwarmState : uint8_t {None = 0, Idle = 1, Collecting = 2, Active = 3, Updating = 4};
 
   // FlightTaskSwarm constants
   static constexpr float kKz = 1.0f;
@@ -95,6 +99,7 @@ private:
 
   void pollMavlink();
   void sendHeartbeat();
+  void sendSwarmStatus();
   void handleMessage(const mavlink_message_t & msg);
   void handleSwarmManagement(const mavlink_swarm_management_t & m);
   void handleSwarmNode(const mavlink_swarm_node_t & m);

@@ -31,6 +31,7 @@ using json = nlohmann::json;
 #define MAV_CMD_COMPONENT_ARM_DISARM 400
 #define MAV_CMD_DO_VTOL_TRANSITION   3000
 #define MAV_CMD_NAV_VTOL_TAKEOFF     84
+#define MAV_CMD_REQUEST_MESSAGE      512
 #define VTOL_STATE_MC 3.0f             // MAV_VTOL_STATE_MC
 #define VTOL_STATE_FW 4.0f             // MAV_VTOL_STATE_FW
 
@@ -150,6 +151,23 @@ void send_command_long(BridgeContext *ctx, uint8_t sys_id, uint16_t command,
                                   sys_id, MAV_COMP_ID_AUTOPILOT1, command, 0,
                                   p1, p2, p3, p4, p5, p6, p7);
     send_to(ctx, sys_id, msg);
+}
+
+// Ask a vehicle's PX4 Swarm task and its ROS 2 Swarm mode node (if any) for SWARM_STATUS
+void request_swarm_status(BridgeContext *ctx, uint8_t sys_id) {
+    send_command_long(ctx, sys_id, MAV_CMD_REQUEST_MESSAGE, (float)MAVLINK_MSG_ID_SWARM_STATUS);
+    VehicleTarget companion;
+    {
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+        auto it = ctx->companion_registry.find(sys_id);
+        if (it == ctx->companion_registry.end()) return;
+        companion = it->second;
+    }
+    mavlink_message_t msg;
+    mavlink_msg_command_long_pack(INJECTOR_SYS_ID, INJECTOR_COMP_ID, &msg,
+                                  sys_id, MAV_COMP_ID_ONBOARD_COMPUTER, MAV_CMD_REQUEST_MESSAGE, 0,
+                                  (float)MAVLINK_MSG_ID_SWARM_STATUS, 0, 0, 0, 0, 0, 0);
+    send_udp(ctx, companion, msg);
 }
 
 void send_set_mode(BridgeContext *ctx, uint8_t sys_id, float main_mode, float sub_mode) {
@@ -296,6 +314,24 @@ void handle_command(BridgeContext *ctx, const json &j) {
             send_set_mode(ctx, id, PX4_CUSTOM_MAIN_MODE_AUTO, PX4_CUSTOM_SUB_MODE_SWARM);
         } else if (command == "goto") {
             send_goto(ctx, id, params);
+        } else if (command == "swarm_status") {
+            request_swarm_status(ctx, id);
+        } else if (command == "set_param") {
+            // PARAM_SET for a float (REAL32) parameter, e.g. {"name":"SWARM_WEIGHT","value":1.5}.
+            // PX4 answers with PARAM_VALUE, which is published on uav/param.
+            mavlink_message_t msg;
+            char name[17] = {};
+            strncpy(name, params.at("name").get<std::string>().c_str(), 16);
+            mavlink_msg_param_set_pack(INJECTOR_SYS_ID, INJECTOR_COMP_ID, &msg, id, MAV_COMP_ID_AUTOPILOT1,
+                                       name, params.at("value").get<float>(), MAV_PARAM_TYPE_REAL32);
+            send_to(ctx, id, msg);
+        } else if (command == "get_param") {
+            mavlink_message_t msg;
+            char name[17] = {};
+            strncpy(name, params.at("name").get<std::string>().c_str(), 16);
+            mavlink_msg_param_request_read_pack(INJECTOR_SYS_ID, INJECTOR_COMP_ID, &msg, id, MAV_COMP_ID_AUTOPILOT1,
+                                                name, -1);
+            send_to(ctx, id, msg);
         } else {
             report(ctx, id, 0, MAV_RESULT_UNSUPPORTED, "unknown command '" + command + "'");
         }
@@ -474,7 +510,45 @@ void handle_mavlink(BridgeContext &ctx, const mavlink_message_t &msg) {
         mavlink_command_ack_t ack;
         mavlink_msg_command_ack_decode(&msg, &ack);
         if (ack.target_system != 0 && ack.target_system != INJECTOR_SYS_ID) break;
+        if (ack.command == MAV_CMD_REQUEST_MESSAGE) break; // the answer itself is what matters
         publish_mqtt(mosq, "uav/command_ack", {{"sys_id", sys_id}, {"command", ack.command}, {"result", ack.result}});
+        break;
+    }
+    case MAVLINK_MSG_ID_PARAM_VALUE: {
+        if (msg.compid != MAV_COMP_ID_AUTOPILOT1) break;
+        mavlink_param_value_t pv;
+        mavlink_msg_param_value_decode(&msg, &pv);
+        std::string name(pv.param_id, strnlen(pv.param_id, sizeof(pv.param_id)));
+        // PX4 sends integer parameters bytewise in the float field
+        json value;
+        if (pv.param_type == MAV_PARAM_TYPE_REAL32) {
+            value = pv.param_value;
+        } else {
+            int32_t i;
+            memcpy(&i, &pv.param_value, sizeof(i));
+            value = i;
+        }
+        publish_mqtt(mosq, "uav/param", {{"sys_id", sys_id}, {"name", name}, {"value", value}});
+        break;
+    }
+    case MAVLINK_MSG_ID_SWARM_STATUS: {
+        if (msg.compid != MAV_COMP_ID_AUTOPILOT1 && msg.compid != MAV_COMP_ID_ONBOARD_COMPUTER) break;
+        mavlink_swarm_status_t st;
+        mavlink_msg_swarm_status_decode(&msg, &st);
+        json nodes = json::array();
+        const int count = std::min<int>(st.node_count, sizeof(st.node_ids) / sizeof(st.node_ids[0]));
+        for (int i = 0; i < count; i++) {
+            nodes.push_back({{"id", st.node_ids[i]}, {"x", st.x[i]}, {"y", st.y[i]}});
+        }
+        publish_mqtt(mosq, "uav/swarm_status", {
+            {"sys_id", sys_id},
+            {"source", msg.compid == MAV_COMP_ID_AUTOPILOT1 ? "px4" : "ros2"},
+            {"state", st.state},
+            {"swarm_id", st.swarm_id},
+            {"leader_id", st.leader_id},
+            {"no_of_nodes", st.no_of_nodes},
+            {"nodes", nodes},
+        });
         break;
     }
     case MAVLINK_MSG_ID_STATUSTEXT: {

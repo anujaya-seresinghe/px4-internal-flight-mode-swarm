@@ -37,6 +37,7 @@ const makeVehicle = (id, i) => ({
   target: null,
   targetYaw: null,
   landTimer: 0,
+  params: { SWARM_WEIGHT: 1 }, // PX4 parameters (only what the GCS uses)
   swarm: { id: 0, nodes: 0, leader: 0, list: [], consensus: [], pending: null },
 });
 
@@ -56,6 +57,15 @@ export const createSimulator = (emit) => {
 
   const resetSwarm = (v) => {
     v.swarm = { id: 0, nodes: 0, leader: 0, list: [], consensus: [], pending: null };
+  };
+
+  // SWARM_STATUS (603) as sent by FlightTaskSwarm / the ROS 2 node running `mode`
+  const swarmStatus = (v, mode, source) => {
+    const s = v.swarm;
+    const base = { sys_id: v.id, source, state: 0, swarm_id: 0, leader_id: 0, no_of_nodes: 0, nodes: [] };
+    if (v.mode !== mode) return base;
+    const state = s.pending ? 4 : s.id === 0 ? 1 : s.list.length === s.nodes ? 3 : 2;
+    return { ...base, state, swarm_id: s.id, leader_id: s.leader, no_of_nodes: s.nodes, nodes: s.list.map((n) => ({ ...n })) };
   };
 
   const handleCommand = (v, command, params = {}) => {
@@ -117,6 +127,19 @@ export const createSimulator = (emit) => {
         v.target = t;
         return ack(v, 192, 0);
       }
+      case 'swarm_status':
+        // Like the bridge: PX4's Swarm task and the vehicle's ROS 2 Swarm mode node both answer
+        emit('uav/swarm_status', swarmStatus(v, MODE.SWARM, 'px4'));
+        emit('uav/swarm_status', swarmStatus(v, MODE.SWARM_EXT, 'ros2'));
+        return undefined;
+      case 'set_param':
+        // PX4 rejects unknown names and clamps nothing; it echoes PARAM_VALUE on success
+        if (!(params.name in v.params)) return;
+        v.params[params.name] = Math.fround(params.value);
+        return emit('uav/param', { sys_id: v.id, name: params.name, value: v.params[params.name] });
+      case 'get_param':
+        if (!(params.name in v.params)) return;
+        return emit('uav/param', { sys_id: v.id, name: params.name, value: v.params[params.name] });
       default:
         return ack(v, 0, 3);
     }
@@ -189,11 +212,13 @@ export const createSimulator = (emit) => {
           const s = v.swarm;
           if (s.consensus.length && s.list.length === s.nodes) {
             const leader = byId(s.leader);
+            // FlightTaskSwarm uses SWARM_WEIGHT on every neighbour; the ROS 2 mode a fixed weight of 1
+            const w = mSub === 11 ? v.params.SWARM_WEIGHT : 1;
             s.consensus.forEach((c) => {
               const o = byId(c.id);
               if (!o) return;
-              cmd[0] -= N - o.pos[0] - c.ox;
-              cmd[1] -= E - o.pos[1] - c.oy;
+              cmd[0] -= w * (N - o.pos[0] - c.ox);
+              cmd[1] -= w * (E - o.pos[1] - c.oy);
             });
             if (leader) {
               cmd[2] = leader.pos[2] - D;

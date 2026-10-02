@@ -223,6 +223,7 @@ set(msg_files
 	SwarmInformation.msg
 	SwarmNode.msg
 	SwarmManagement.msg
+	SwarmStatus.msg
 	TakeoffStatus.msg
 	TaskStackInfo.msg
 	TecsStatus.msg

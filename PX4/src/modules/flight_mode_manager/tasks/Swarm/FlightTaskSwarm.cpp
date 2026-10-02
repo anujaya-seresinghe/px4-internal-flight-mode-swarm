@@ -44,7 +44,9 @@ FlightTaskSwarm::FlightTaskSwarm()
 
 FlightTaskSwarm::~FlightTaskSwarm()
 {
-
+	// The task only exists while the Swarm mode runs
+	publishStatus(swarm_status_s::STATE_NONE);
+	reset();
 }
 
 
@@ -173,11 +175,16 @@ bool FlightTaskSwarm::update()
 		float output_x = 0;
 		float output_y = 0;
 		float apf_sum = 0;
+		// Same consensus weight for every neighbour, read live from SWARM_WEIGHT so a change
+		// from the GCS applies immediately (the task reloads parameters on parameter_update)
+		const float weight = _param_swarm_weight.get();
 
 		for (ConsensusNode *consensus_node : _consensus_list) {
 			if (!consensus_node->has_position) {
 				continue;
 			}
+
+			consensus_node->weight = weight;
 
 			output_x = output_x - (consensus_node->weight * (_position(0) - consensus_node->x - consensus_node->offset_x));
 			output_y = output_y - (consensus_node->weight * (_position(1) - consensus_node->y - consensus_node->offset_y));
@@ -196,7 +203,49 @@ bool FlightTaskSwarm::update()
 		_yaw_setpoint = _ref_yaw;
 	}
 
+	if (hrt_elapsed_time(&_status_published) >= STATUS_INTERVAL) {
+		uint8_t state = swarm_status_s::STATE_IDLE;
+
+		if (_updating_formation) {
+			state = swarm_status_s::STATE_UPDATING;
+
+		} else if (_swarm_id != 0) {
+			state = (_node_count == _no_of_nodes) ? swarm_status_s::STATE_ACTIVE : swarm_status_s::STATE_COLLECTING;
+		}
+
+		publishStatus(state);
+	}
+
 	return true;
+}
+
+// Swarm membership for MAVLink SWARM_STATUS: the complete formation this node flies, so a GCS
+// can restore the swarm from any follower (the leader leaves the Swarm mode)
+void FlightTaskSwarm::publishStatus(uint8_t state)
+{
+	swarm_status_s status{};
+	status.state = state;
+
+	if (state != swarm_status_s::STATE_NONE) {
+		status.swarm_id = _swarm_id;
+		status.leader_id = _leader_id;
+		status.no_of_nodes = _no_of_nodes;
+
+		for (Node *node : _node_list) {
+			if (status.node_count >= swarm_status_s::MAX_NODES) {
+				break;
+			}
+
+			status.node_ids[status.node_count] = node->node_id;
+			status.x[status.node_count] = node->x;
+			status.y[status.node_count] = node->y;
+			status.node_count++;
+		}
+	}
+
+	status.timestamp = hrt_absolute_time();
+	_swarm_status_pub.publish(status);
+	_status_published = status.timestamp;
 }
 
 void FlightTaskSwarm::upsertNode(IntrusiveSortedList<Node *> &list, uint8_t node_id, float x, float y)
@@ -242,7 +291,7 @@ void FlightTaskSwarm::buildConsensus()
 			consensus_node->node_id = node->node_id;
 			consensus_node->offset_x = own_node->x - node->x;
 			consensus_node->offset_y = own_node->y - node->y;
-			consensus_node->weight = 1;
+			consensus_node->weight = _param_swarm_weight.get();
 
 			for (ConsensusNode *old : _consensus_list) {
 				if (old->node_id == node->node_id) {

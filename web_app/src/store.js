@@ -27,6 +27,7 @@ export const useStore = create((set, get) => ({
   selected: [],
   selectedSwarm: null, // a swarm selected as a unit (commands go to its leader)
   companions: {}, // sys_id -> { customMode, active, lastSeen } of the ROS 2 Swarm mode nodes
+  params: {}, // sys_id -> { NAME: value } of PX4 parameters reported via PARAM_VALUE
   swarms: {},
   logs: [],
   view: saved.view || 'split',
@@ -35,6 +36,8 @@ export const useStore = create((set, get) => ({
   pendingGoto: null,
   overlays: { labels: true, vectors: true, links: true, targets: true, ...saved.overlays },
 
+  setParam: (id, name, value) =>
+    set((s) => ({ params: { ...s.params, [id]: { ...s.params[id], [name]: value } } })),
   setLink: (patch) => set((s) => ({ link: { ...s.link, ...patch } })),
   setView: (view) => set({ view }),
   setFollow: (follow) => set({ follow }),
@@ -80,7 +83,7 @@ export const useStore = create((set, get) => ({
 
   resetVehicles: () => {
     pending.clear();
-    set({ vehicles: {}, companions: {}, selected: [], selectedSwarm: null, follow: null });
+    set({ vehicles: {}, companions: {}, params: {}, selected: [], selectedSwarm: null, follow: null });
   },
 }));
 

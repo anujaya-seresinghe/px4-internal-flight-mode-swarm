@@ -103,6 +103,14 @@ export const dissolveSwarm = (swarm) => {
   log('info', `Swarm ${swarm.id} dissolved — members switched to Hold`);
 };
 
+/** Set the consensus weight of FlightTaskSwarm (PX4 parameter SWARM_WEIGHT) on these vehicles. */
+export const setSwarmWeight = (ids, value) => {
+  if (!ids.length || !Number.isFinite(value)) return false;
+  const ok = publish('uav/command', { uav_ids: ids, command: 'set_param', params: { name: 'SWARM_WEIGHT', value } });
+  if (ok) useStore.getState().log('cmd', `SWARM_WEIGHT = ${value} → ${label(ids)}`);
+  return ok;
+};
+
 export const nextSwarmId = () => {
   const ids = Object.keys(useStore.getState().swarms).map(Number);
   let id = 1;

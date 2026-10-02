@@ -4,6 +4,7 @@ import { FORMATIONS, buildFormation, tightPairs, APF_RADIUS } from '../lib/forma
 import { swarmColor } from '../lib/theme';
 import { isSwarmMode, isVtol } from '../lib/px4';
 import { deploySwarm, dissolveSwarm, nextSwarmId, sendCommand, updateFormation } from '../lib/commands';
+import { requestSwarmStatus } from '../link';
 import { FormationEditor } from './FormationEditor';
 
 const STEPS = ['Swarm mode', 'Management', 'Node offsets', 'Done'];
@@ -34,6 +35,7 @@ const SwarmCard = ({ swarm, active, onOpen, onReform }) => {
         <span className="swarm-dot" />
         <span className="swarm-name">Swarm {swarm.id}</span>
         <span className="chip">{swarm.external ? 'ROS 2' : 'PX4'}</span>
+        {swarm.restored && <span className="chip" title="Rebuilt from the vehicles' SWARM_STATUS after a reload">restored</span>}
         <span className={`chip ${swarm.status === 'active' ? 'chip-ok' : swarm.status === 'failed' ? 'chip-bad' : 'chip-info'}`}>
           {swarm.status}
         </span>
@@ -219,9 +221,20 @@ export const SwarmPanel = () => {
       <section className="section">
         <div className="section-head">
           <h3>Active swarms <span className="count">{swarmList.length}</span></h3>
+          <button
+            className="link-btn"
+            disabled={list.length === 0}
+            title="Ask every vehicle for its swarm (SWARM_STATUS) and restore swarms this GCS does not know"
+            onClick={() => {
+              requestSwarmStatus(list.map((v) => v.id));
+              useStore.getState().log('cmd', `Swarm status requested from ${list.length} UAV(s)`);
+            }}
+          >
+            Read from vehicles
+          </button>
         </div>
         {swarmList.length === 0 ? (
-          <p className="hint">No swarms deployed from this station yet.</p>
+          <p className="hint">No active swarms. Swarms already running on the vehicles are restored automatically when the GCS connects.</p>
         ) : (
           swarmList.map((s) => <SwarmCard key={s.id} swarm={s} active={editing === s.id} onOpen={openSwarm} onReform={reform} />)
         )}

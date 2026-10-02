@@ -47,6 +47,7 @@
 #include <uORB/topics/swarm_management.h>
 #include <uORB/topics/swarm_node.h>
 #include <uORB/topics/swarm_information.h>
+#include <uORB/topics/swarm_status.h>
 
 //#include <px4_platform_common/module_params.hpp>
 
@@ -112,8 +113,8 @@ private:
 	const float _Kh = 1.0f;
 	const float _DELTA_H = 3.0f;
 	const float _DELTA_R = 3.0f;
-	uint8_t _no_of_nodes;
-	uint8_t _leader_id;
+	uint8_t _no_of_nodes{0};
+	uint8_t _leader_id{0};
 	uint8_t _node_count = 0;
 	uint8_t _swarm_id = 0;
 	IntrusiveSortedList<Node *> _node_list;
@@ -134,6 +135,10 @@ private:
 	static void upsertNode(IntrusiveSortedList<Node *> &list, uint8_t node_id, float x, float y);
 	void buildConsensus();
 	void applyPendingFormation();
+	void publishStatus(uint8_t state);
+
+	hrt_abstime _status_published{0};
+	static constexpr hrt_abstime STATUS_INTERVAL{500000}; // [us] 2 Hz
 
 
 
@@ -144,9 +149,11 @@ private:
 
 
 	uORB::Publication<vehicle_command_s> _vehicle_command_pub{ORB_ID(vehicle_command)};
+	uORB::Publication<swarm_status_s> _swarm_status_pub{ORB_ID(swarm_status)};
 
 	DEFINE_PARAMETERS_CUSTOM_PARENT(FlightTask,
-        (ParamInt<px4::params::MAV_SYS_ID>) _param_mav_sys_id
+        (ParamInt<px4::params::MAV_SYS_ID>) _param_mav_sys_id,
+        (ParamFloat<px4::params::SWARM_WEIGHT>) _param_swarm_weight
     )
 
 };

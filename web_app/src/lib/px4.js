@@ -100,4 +100,6 @@ export const VEHICLE_COMMANDS = {
   vtol_takeoff: 'VTOL takeoff + transition',
   transition_fw: 'Transition to fixed-wing',
   transition_mc: 'Transition to multicopter',
+  set_param: 'Set parameter',
+  get_param: 'Read parameter',
 };
